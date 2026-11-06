@@ -3,6 +3,12 @@
 Pizarra digital para Windows: dibuja encima de la pantalla, en hojas independientes o escribe con el teclado.
 Es un solo `.exe` sin instalación; usa .NET Framework 4.8, ya incluido en Windows 10 y 11.
 
+## Descargar
+
+[Descargar Pizarra.exe](https://github.com/VLADIMIR1991-05/Pizarra_Vladd/raw/main/dist/Pizarra.exe)
+
+El programa no está firmado, así que Windows puede avisar al abrirlo: pulsa **Más información** y luego **Ejecutar de todas formas**.
+
 ## Modos
 
 - **Pantalla:** dibuja sobre cualquier programa. Con el puntero (`Esc` o `Ctrl+Alt+D`) sigues usando el equipo sin borrar el dibujo.
