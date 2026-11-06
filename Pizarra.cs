@@ -20,6 +20,7 @@ using System.Windows.Input;
 using System.Windows.Interop;
 using System.Windows.Markup;
 using System.Windows.Media;
+using System.Windows.Media.Animation;
 using System.Windows.Media.Effects;
 using System.Windows.Media.Imaging;
 using System.Windows.Shapes;
@@ -29,14 +30,14 @@ using WinInk = global::Windows.UI.Input.Inking;
 namespace Pizarra
 {
     enum Tool { Cursor, Pen, Highlighter, Eraser, StrokeEraser, Text, Sticky, Select, Shape, Hand, Laser, Spotlight, Magnifier, Eyedropper }
-    enum PenKind { Boligrafo, Lapiz, Rotulador, Pincel, Neon, Discontinuo, Punteado, Aerosol, Arcoiris, Desvanecer, Caligrafia, Gotica, Inglesa, Estilografica, Firma, Cepillo }
+    enum PenKind { Boligrafo, Lapiz, Rotulador, Pincel, Neon, Discontinuo, Punteado, Aerosol, Arcoiris, Desvanecer, Caligrafia, Gotica, Inglesa, Estilografica, Firma, Cepillo, Plasma }
     // Cómo se interpreta el trazo: a mano alzada o punto a punto.
     enum TraceMode { Libre, Suavizado, Recto, Ortogonal, Geometria, Letras, Polilinea, PoliOrtogonal, Curva }
     enum ShapeKind { Line, Arrow, DoubleArrow, Rect, RoundRect, Ellipse, Triangle, RightTriangle, Diamond, Pentagon, Hexagon, Star, Axes }
     // Los valores se guardan en los cuadernos: añadir siempre al final.
-    enum Paper { Blanca, Cuadriculada, Rayada, Puntos, Negra, Verde, Milimetrada, Pentagrama, Isometrica, Pauta }
+    enum Paper { Blanca, Cuadriculada, Rayada, Puntos, Negra, Verde, Milimetrada, Pentagrama, Isometrica, Pauta, Cyber, Plano }
     enum ItemKind { Text, Sticky, Doc, Image }
-    enum StrokeStyle { Plain = 0, Neon = 1, Dashed = 2, Dotted = 3, Spray = 4, Rainbow = 5 }
+    enum StrokeStyle { Plain = 0, Neon = 1, Dashed = 2, Dotted = 3, Spray = 4, Rainbow = 5, Plasma = 6 }
     enum GuideKind { Ruler, Protractor }
 
     // Texto, nota, documento o imagen colocados sobre la hoja.
@@ -58,7 +59,8 @@ namespace Pizarra
     {
         public StrokeCollection Strokes = new StrokeCollection();
         public List<Item> Items = new List<Item>();
-        public Paper Paper = Paper.Blanca;
+        public Paper Paper = Paper.Cyber;
+        public BitmapSource Thumb; // miniatura en caché; null si hay que regenerarla
         public double Zoom = 1, PanX, PanY;
         public List<Snap> Undo = new List<Snap>();
         public List<Snap> Redo = new List<Snap>();
@@ -147,6 +149,19 @@ namespace Pizarra
                     dc.DrawGeometry(null, MakePen(Color.FromArgb((byte)(c.A * 0.18), c.R, c.G, c.B), w * 3.4), ng);
                     dc.DrawGeometry(null, MakePen(Color.FromArgb((byte)(c.A * 0.45), c.R, c.G, c.B), w * 1.9), ng);
                     dc.DrawGeometry(null, MakePen(Color.FromArgb(c.A, (byte)((c.R + 255) / 2), (byte)((c.G + 255) / 2), (byte)((c.B + 255) / 2)), Math.Max(1, w * 0.7)), ng);
+                    break;
+                case StrokeStyle.Plasma:
+                    var pg = PathGeometry(false);
+                    var hot = new LinearGradientBrush(Color.FromRgb(0x22, 0xD3, 0xEE), Color.FromRgb(0xF4, 0x72, 0xB6), 0);
+                    var halo = hot.Clone();
+                    halo.Opacity = 0.22;
+                    var mid = hot.Clone();
+                    mid.Opacity = 0.5;
+                    Func<Brush, double, Pen> plasma = (b, t) => new Pen(b, t) { StartLineCap = PenLineCap.Round, EndLineCap = PenLineCap.Round, LineJoin = PenLineJoin.Round };
+                    dc.DrawGeometry(null, plasma(halo, w * 3.6), pg);
+                    dc.DrawGeometry(null, plasma(mid, w * 1.9), pg);
+                    dc.DrawGeometry(null, plasma(hot, Math.Max(1, w * 0.8)), pg);
+                    dc.DrawGeometry(null, MakePen(Color.FromArgb(200, 255, 255, 255), Math.Max(0.6, w * 0.25)), pg);
                     break;
                 case StrokeStyle.Dashed:
                     var dp = MakePen(c, w);
@@ -606,7 +621,17 @@ namespace Pizarra
     static class Ui
     {
         static Style buttonStyle;
-        public static readonly Color PanelColor = Color.FromRgb(0x20, 0x21, 0x24);
+        // Con false las transiciones se aplican al instante (pruebas).
+        public static bool Motion = true;
+        public static readonly FontFamily Font = new FontFamily("Bahnschrift, Segoe UI");
+        public static readonly Color Cyan = Color.FromRgb(0x22, 0xD3, 0xEE), Violet = Color.FromRgb(0xA7, 0x8B, 0xFA), Text = Color.FromRgb(0xDC, 0xEB, 0xFF), Muted = Color.FromRgb(0x8C, 0xA0, 0xBD), Line = Color.FromRgb(0x2A, 0x3A, 0x55);
+        public static readonly Brush Accent = Frozen(new LinearGradientBrush(Cyan, Violet, 35));
+        public static readonly Brush Glass = Frozen(new LinearGradientBrush(Color.FromArgb(0xF4, 0x14, 0x1D, 0x33), Color.FromArgb(0xF4, 0x0A, 0x0F, 0x1E), 90));
+        public static readonly Brush Edge = Frozen(new LinearGradientBrush(Color.FromArgb(0x99, 0x22, 0xD3, 0xEE), Color.FromArgb(0x55, 0xA7, 0x8B, 0xFA), 35));
+
+        static Brush Frozen(Brush b) { b.Freeze(); return b; }
+
+        const string Xmlns = "xmlns='http://schemas.microsoft.com/winfx/2006/xaml/presentation' xmlns:x='http://schemas.microsoft.com/winfx/2006/xaml'";
 
         public static Style ButtonStyle
         {
@@ -614,8 +639,8 @@ namespace Pizarra
             {
                 if (buttonStyle == null)
                     buttonStyle = (Style)XamlReader.Parse(
-@"<Style xmlns='http://schemas.microsoft.com/winfx/2006/xaml/presentation' xmlns:x='http://schemas.microsoft.com/winfx/2006/xaml' TargetType='Button'>
-  <Setter Property='Foreground' Value='#E8EAED'/>
+@"<Style " + Xmlns + @" TargetType='Button'>
+  <Setter Property='Foreground' Value='#DCEBFF'/>
   <Setter Property='Background' Value='Transparent'/>
   <Setter Property='Focusable' Value='False'/>
   <Setter Property='Width' Value='36'/>
@@ -626,23 +651,147 @@ namespace Pizarra
   <Setter Property='FontSize' Value='16'/>
   <Setter Property='Template'><Setter.Value>
     <ControlTemplate TargetType='Button'>
-      <Border x:Name='b' Background='{TemplateBinding Background}' CornerRadius='7'>
+      <Grid Background='Transparent'>
+        <Border x:Name='hover' CornerRadius='10' Opacity='0' Background='#2622D3EE' BorderBrush='#8822D3EE' BorderThickness='1'/>
+        <Border x:Name='on' CornerRadius='10' Visibility='Collapsed'>
+          <Border.Background><LinearGradientBrush StartPoint='0,0' EndPoint='1,1'><GradientStop Color='#22D3EE' Offset='0'/><GradientStop Color='#A78BFA' Offset='1'/></LinearGradientBrush></Border.Background>
+          <Border.Effect><DropShadowEffect Color='#22D3EE' BlurRadius='14' ShadowDepth='0' Opacity='0.7'/></Border.Effect>
+        </Border>
         <ContentPresenter HorizontalAlignment='{TemplateBinding HorizontalContentAlignment}' VerticalAlignment='Center'/>
-      </Border>
+      </Grid>
       <ControlTemplate.Triggers>
-        <Trigger Property='IsMouseOver' Value='True'><Setter TargetName='b' Property='Background' Value='#3C4043'/></Trigger>
-        <Trigger Property='IsPressed' Value='True'><Setter TargetName='b' Property='Background' Value='#50545A'/></Trigger>
-        <Trigger Property='Tag' Value='on'>
-          <Setter TargetName='b' Property='Background' Value='#8AB4F8'/>
-          <Setter Property='Foreground' Value='#14171C'/>
+        <Trigger Property='IsMouseOver' Value='True'>
+          <Trigger.EnterActions><BeginStoryboard><Storyboard><DoubleAnimation Storyboard.TargetName='hover' Storyboard.TargetProperty='Opacity' To='1' Duration='0:0:0.12'/></Storyboard></BeginStoryboard></Trigger.EnterActions>
+          <Trigger.ExitActions><BeginStoryboard><Storyboard><DoubleAnimation Storyboard.TargetName='hover' Storyboard.TargetProperty='Opacity' To='0' Duration='0:0:0.2'/></Storyboard></BeginStoryboard></Trigger.ExitActions>
         </Trigger>
-        <Trigger Property='IsEnabled' Value='False'><Setter Property='Opacity' Value='0.35'/></Trigger>
+        <Trigger Property='IsPressed' Value='True'><Setter TargetName='hover' Property='Background' Value='#5522D3EE'/></Trigger>
+        <Trigger Property='Tag' Value='on'>
+          <Setter TargetName='on' Property='Visibility' Value='Visible'/>
+          <Setter Property='Foreground' Value='#061220'/>
+        </Trigger>
+        <Trigger Property='IsEnabled' Value='False'><Setter Property='Opacity' Value='0.3'/></Trigger>
       </ControlTemplate.Triggers>
     </ControlTemplate>
   </Setter.Value></Setter>
 </Style>");
                 return buttonStyle;
             }
+        }
+
+        // Estilos que no se asignan uno a uno: deslizadores y descripciones emergentes.
+        public static void Install(Application app)
+        {
+            if (app == null) return;
+            app.Resources.MergedDictionaries.Add((ResourceDictionary)XamlReader.Parse(
+@"<ResourceDictionary " + Xmlns + @">
+  <Style TargetType='ToolTip'>
+    <Setter Property='Foreground' Value='#DCEBFF'/>
+    <Setter Property='FontFamily' Value='Bahnschrift, Segoe UI'/>
+    <Setter Property='FontSize' Value='12'/>
+    <Setter Property='HasDropShadow' Value='False'/>
+    <Setter Property='Template'><Setter.Value>
+      <ControlTemplate TargetType='ToolTip'>
+        <Border Background='#F40C1324' BorderBrush='#8822D3EE' BorderThickness='1' CornerRadius='8' Padding='9,5' Margin='6'>
+          <ContentPresenter/>
+        </Border>
+      </ControlTemplate>
+    </Setter.Value></Setter>
+  </Style>
+  <Style x:Key='sliderEnd' TargetType='RepeatButton'>
+    <Setter Property='Focusable' Value='False'/>
+    <Setter Property='IsTabStop' Value='False'/>
+    <Setter Property='Template'><Setter.Value>
+      <ControlTemplate TargetType='RepeatButton'><Border Background='Transparent'/></ControlTemplate>
+    </Setter.Value></Setter>
+  </Style>
+  <Style x:Key='sliderFill' TargetType='RepeatButton' BasedOn='{StaticResource sliderEnd}'>
+    <Setter Property='Template'><Setter.Value>
+      <ControlTemplate TargetType='RepeatButton'>
+        <Border Background='Transparent'>
+          <Border Height='3' CornerRadius='2' VerticalAlignment='Center'>
+            <Border.Background><LinearGradientBrush StartPoint='0,0' EndPoint='1,0'><GradientStop Color='#22D3EE' Offset='0'/><GradientStop Color='#A78BFA' Offset='1'/></LinearGradientBrush></Border.Background>
+          </Border>
+        </Border>
+      </ControlTemplate>
+    </Setter.Value></Setter>
+  </Style>
+  <Style TargetType='Slider'>
+    <Setter Property='IsMoveToPointEnabled' Value='True'/>
+    <Setter Property='Template'><Setter.Value>
+      <ControlTemplate TargetType='Slider'>
+        <Grid Height='24' Background='Transparent'>
+          <Border Height='3' CornerRadius='2' Background='#2A3A55' VerticalAlignment='Center'/>
+          <Track x:Name='PART_Track'>
+            <Track.DecreaseRepeatButton><RepeatButton Style='{StaticResource sliderFill}' Command='{x:Static Slider.DecreaseLarge}'/></Track.DecreaseRepeatButton>
+            <Track.IncreaseRepeatButton><RepeatButton Style='{StaticResource sliderEnd}' Command='{x:Static Slider.IncreaseLarge}'/></Track.IncreaseRepeatButton>
+            <Track.Thumb>
+              <Thumb Focusable='False'>
+                <Thumb.Template><ControlTemplate TargetType='Thumb'>
+                  <Ellipse Width='14' Height='14' Fill='#E8FBFF' Stroke='#22D3EE' StrokeThickness='2'>
+                    <Ellipse.Effect><DropShadowEffect Color='#22D3EE' BlurRadius='10' ShadowDepth='0' Opacity='0.9'/></Ellipse.Effect>
+                  </Ellipse>
+                </ControlTemplate></Thumb.Template>
+              </Thumb>
+            </Track.Thumb>
+          </Track>
+        </Grid>
+        <ControlTemplate.Triggers><Trigger Property='IsEnabled' Value='False'><Setter Property='Opacity' Value='0.3'/></Trigger></ControlTemplate.Triggers>
+      </ControlTemplate>
+    </Setter.Value></Setter>
+  </Style>
+</ResourceDictionary>"));
+        }
+
+        // Panel de cristal oscuro con borde degradado y halo.
+        public static Border Card(UIElement child, double radius, double padding)
+        {
+            return new Border
+            {
+                Child = child,
+                Background = Glass,
+                BorderBrush = Edge,
+                BorderThickness = new Thickness(1),
+                CornerRadius = new CornerRadius(radius),
+                Padding = new Thickness(padding),
+                Effect = new DropShadowEffect { Color = Cyan, BlurRadius = 24, ShadowDepth = 0, Opacity = 0.28 }
+            };
+        }
+
+        public static void FadeTo(UIElement e, double to, int ms)
+        {
+            if (!Motion)
+            {
+                e.BeginAnimation(UIElement.OpacityProperty, null);
+                e.Opacity = to;
+                return;
+            }
+            e.BeginAnimation(UIElement.OpacityProperty, new DoubleAnimation(to, TimeSpan.FromMilliseconds(ms)) { EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut } });
+        }
+
+        // Aparece subiendo o bajando unos puntos.
+        public static void SlideIn(FrameworkElement e, double fromY, int ms)
+        {
+            if (!Motion) return;
+            var t = new TranslateTransform();
+            e.RenderTransform = t;
+            var ease = new CubicEase { EasingMode = EasingMode.EaseOut };
+            t.BeginAnimation(TranslateTransform.YProperty, new DoubleAnimation(fromY, 0, TimeSpan.FromMilliseconds(ms)) { EasingFunction = ease });
+            e.BeginAnimation(UIElement.OpacityProperty, new DoubleAnimation(0, 1, TimeSpan.FromMilliseconds(ms)) { EasingFunction = ease });
+        }
+
+        // Hexágono de la marca.
+        public static FrameworkElement Logo()
+        {
+            return new System.Windows.Shapes.Path
+            {
+                Data = Geometry.Parse("M9,1 L16,5 V13 L9,17 L2,13 V5 Z M9,5.5 L12.5,7.5 V10.5 L9,12.5 L5.5,10.5 V7.5 Z"),
+                Fill = Accent,
+                Width = 18,
+                Height = 18,
+                VerticalAlignment = VerticalAlignment.Center,
+                Margin = new Thickness(3, 0, 7, 0),
+                Effect = new DropShadowEffect { Color = Cyan, BlurRadius = 10, ShadowDepth = 0, Opacity = 0.8 }
+            };
         }
 
         public static Button Glyph(string glyph, string tip, Action click)
@@ -654,7 +803,7 @@ namespace Pizarra
 
         public static Button Label(string text, string tip, double width, Action click)
         {
-            var b = new Button { Style = ButtonStyle, Content = text, ToolTip = tip, Width = width, FontFamily = new FontFamily("Segoe UI"), FontSize = 13 };
+            var b = new Button { Style = ButtonStyle, Content = text, ToolTip = tip, Width = width, FontFamily = Font, FontSize = 13 };
             b.Click += delegate { click(); };
             return b;
         }
@@ -696,35 +845,29 @@ namespace Pizarra
 
         public static Border Separator()
         {
-            return new Border { Width = 1, Height = 24, Margin = new Thickness(5, 0, 5, 0), Background = new SolidColorBrush(Color.FromRgb(0x5F, 0x63, 0x68)) };
+            return new Border { Width = 1, Height = 24, Margin = new Thickness(5, 0, 5, 0), Background = Edge, Opacity = 0.6 };
         }
 
         public static StackPanel Row() { return new StackPanel { Orientation = Orientation.Horizontal }; }
 
         public static TextBlock Caption(string text)
         {
-            return new TextBlock { Text = text, Foreground = new SolidColorBrush(Color.FromRgb(0xBD, 0xC1, 0xC6)), FontSize = 12, Margin = new Thickness(6, 6, 6, 3) };
+            return new TextBlock { Text = text, Foreground = new SolidColorBrush(Muted), FontFamily = Font, FontSize = 12, Margin = new Thickness(6, 6, 6, 3) };
         }
 
         // Ventana flotante sin foco: los textos no pierden el cursor al usarla.
         public static Popup Flyout(UIElement anchor, UIElement content, PlacementMode placement)
         {
+            var card = Card(content, 12, 6);
+            card.Margin = new Thickness(12);
             var p = new Popup
             {
                 AllowsTransparency = true,
                 StaysOpen = false,
                 Placement = placement,
                 PlacementTarget = anchor,
-                PopupAnimation = PopupAnimation.None,
-                Child = new Border
-                {
-                    Background = new SolidColorBrush(PanelColor),
-                    BorderBrush = new SolidColorBrush(Color.FromRgb(0x5F, 0x63, 0x68)),
-                    BorderThickness = new Thickness(1),
-                    CornerRadius = new CornerRadius(8),
-                    Padding = new Thickness(5),
-                    Child = content
-                }
+                PopupAnimation = Motion ? PopupAnimation.Fade : PopupAnimation.None,
+                Child = card
             };
             return p;
         }
@@ -737,7 +880,7 @@ namespace Pizarra
                 Content = new TextBlock { Text = text, Margin = new Thickness(8, 0, 12, 0) },
                 Width = double.NaN,
                 Height = 30,
-                FontFamily = new FontFamily("Segoe UI"),
+                FontFamily = Font,
                 FontSize = 13,
                 HorizontalContentAlignment = HorizontalAlignment.Left,
                 HorizontalAlignment = HorizontalAlignment.Stretch,
@@ -806,13 +949,13 @@ namespace Pizarra
 
         FormattedText Label(string s, double size)
         {
-            return new FormattedText(s, CultureInfo.InvariantCulture, FlowDirection.LeftToRight, new Typeface("Segoe UI"), size, Brushes.Black, VisualTreeHelper.GetDpi(this).PixelsPerDip);
+            return new FormattedText(s, CultureInfo.InvariantCulture, FlowDirection.LeftToRight, new Typeface("Bahnschrift"), size, new SolidColorBrush(Ui.Cyan), VisualTreeHelper.GetDpi(this).PixelsPerDip);
         }
 
         protected override void OnRender(DrawingContext dc)
         {
-            var fill = new SolidColorBrush(Color.FromArgb(205, 0xFF, 0xF3, 0xC4));
-            var pen = new Pen(new SolidColorBrush(Color.FromRgb(0x33, 0x33, 0x33)), 1);
+            var fill = new SolidColorBrush(Color.FromArgb(0xD8, 0x0B, 0x1A, 0x30));
+            var pen = new Pen(new SolidColorBrush(Ui.Cyan), 1);
             if (Kind == GuideKind.Ruler)
             {
                 dc.DrawRectangle(fill, pen, new Rect(0, 0, RulerW, RulerH));
@@ -841,7 +984,7 @@ namespace Pizarra
                         dc.DrawText(t, new Point(c.X - rt * Math.Cos(th) - t.Width / 2, c.Y - rt * Math.Sin(th) - t.Height / 2));
                     }
                 }
-                dc.DrawEllipse(Brushes.Black, null, c, 2.5, 2.5);
+                dc.DrawEllipse(new SolidColorBrush(Ui.Cyan), null, c, 2.5, 2.5);
                 dc.DrawText(Label(Math.Round(Angle) + "°", 13), new Point(c.X - 12, c.Y - 48));
             }
         }
@@ -886,7 +1029,7 @@ namespace Pizarra
     }
 
     // ==================================================================================
-    class CanvasWindow : Window
+    partial class CanvasWindow : Window
     {
         public static bool AutosaveEnabled = true;
         internal const double CanvasW = 16000, CanvasH = 12000;
@@ -906,7 +1049,7 @@ namespace Pizarra
         internal TraceMode Trace = TraceMode.Libre;
         internal double NibAngle = 35;
         internal int SmoothLevel = 3;
-        internal Color InkColor = Color.FromRgb(0x20, 0x20, 0x20);
+        internal Color InkColor = Colors.White;
         internal Color StickyColor = Color.FromRgb(0xFF, 0xF1, 0x76);
         internal double InkOpacity = 1;
         internal double PenSize = 3, HighlightSize = 24, EraserSize = 30, FontPt = 22;
@@ -968,14 +1111,14 @@ namespace Pizarra
             effectLayer = new Canvas { IsHitTestVisible = false };
             spot = new System.Windows.Shapes.Path { Fill = new SolidColorBrush(Color.FromArgb(175, 0, 0, 0)), Visibility = Visibility.Collapsed };
             lensBrush = new ImageBrush { ViewboxUnits = BrushMappingMode.Absolute, Stretch = Stretch.Fill };
-            lens = new Ellipse { Fill = lensBrush, Stroke = new SolidColorBrush(Color.FromRgb(0x8A, 0xB4, 0xF8)), StrokeThickness = 3, Visibility = Visibility.Collapsed };
+            lens = new Ellipse { Fill = lensBrush, Stroke = new SolidColorBrush(Ui.Cyan), StrokeThickness = 3, Visibility = Visibility.Collapsed };
             effectLayer.Children.Add(spot);
             effectLayer.Children.Add(lens);
 
             prevBtn = Ui.Glyph("", "Hoja anterior (RePág)", delegate { GoToSheet(SheetIndex - 1); });
             nextBtn = Ui.Glyph("", "Hoja siguiente (AvPág)", delegate { GoToSheet(SheetIndex + 1); });
-            pageLabel = new TextBlock { Foreground = Brushes.White, FontSize = 14, VerticalAlignment = VerticalAlignment.Center, MinWidth = 62, TextAlignment = TextAlignment.Center };
-            zoomLabel = new TextBlock { Foreground = Brushes.White, FontSize = 13, VerticalAlignment = VerticalAlignment.Center, MinWidth = 44, TextAlignment = TextAlignment.Center };
+            pageLabel = new TextBlock { Foreground = new SolidColorBrush(Ui.Text), FontFamily = Ui.Font, FontSize = 13, VerticalAlignment = VerticalAlignment.Center, MinWidth = 62, TextAlignment = TextAlignment.Center };
+            zoomLabel = new TextBlock { Foreground = new SolidColorBrush(Ui.Cyan), FontFamily = Ui.Font, FontSize = 13, VerticalAlignment = VerticalAlignment.Center, MinWidth = 44, TextAlignment = TextAlignment.Center };
             paperBtn = Ui.Glyph("", "Tipo de hoja", ShowPaperMenu);
             sheetMenuBtn = Ui.Glyph("", "Más opciones de hoja: duplicar, mover, plantillas", ShowSheetMenu);
             pill = Ui.Row();
@@ -1001,19 +1144,15 @@ namespace Pizarra
             root.Children.Add(panelLayer);
             letterTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(1300) };
             letterTimer.Tick += delegate { letterTimer.Stop(); ConvertPendingLetters(); };
-            root.Children.Add(new Border
-            {
-                Child = pill,
-                Background = new SolidColorBrush(Ui.PanelColor),
-                CornerRadius = new CornerRadius(10),
-                Padding = new Thickness(4),
-                Margin = new Thickness(0, 0, 0, 16),
-                HorizontalAlignment = HorizontalAlignment.Center,
-                VerticalAlignment = VerticalAlignment.Bottom
-            });
+            var pillCard = Ui.Card(pill, 14, 4);
+            pillCard.Margin = new Thickness(0, 0, 0, 16);
+            pillCard.HorizontalAlignment = HorizontalAlignment.Center;
+            pillCard.VerticalAlignment = VerticalAlignment.Bottom;
+            root.Children.Add(pillCard);
             guideLayer.IsHitTestVisible = true;
             guideLayer.Background = null;
             Content = root;
+            InitPro();
 
             Ink.StrokeCollected += delegate(object s, InkCanvasStrokeCollectedEventArgs e) { ProcessNewStroke(e.Stroke); };
             Ink.SelectionMoved += delegate { dirty = true; Commit(); };
@@ -1042,10 +1181,12 @@ namespace Pizarra
                 hwnd = new WindowInteropHelper(this).Handle;
                 HwndSource.FromHwnd(hwnd).AddHook(WndProc);
                 Native.RegisterHotKey(hwnd, Native.HOTKEY_ID, Native.MOD_CONTROL | Native.MOD_ALT, KeyInterop.VirtualKeyFromKey(Key.D));
+                Native.RegisterHotKey(hwnd, RecHotkeyId, Native.MOD_CONTROL | Native.MOD_ALT, KeyInterop.VirtualKeyFromKey(Key.R));
                 PlaceOnMonitor();
             };
             Closed += delegate
             {
+                Native.UnregisterHotKey(hwnd, RecHotkeyId);
                 Native.UnregisterHotKey(hwnd, Native.HOTKEY_ID);
                 fadeTimer.Stop();
                 autosaveTimer.Stop();
@@ -1055,6 +1196,7 @@ namespace Pizarra
             {
                 Bar.Owner = this;
                 Bar.Show();
+                Bar.PlayIntro();
                 UpdateCanvasLook();
                 ApplyTool();
                 PlaceToolbar();
@@ -1073,6 +1215,11 @@ namespace Pizarra
             if (msg == Native.WM_HOTKEY && w.ToInt32() == Native.HOTKEY_ID)
             {
                 ToggleHotkey();
+                handled = true;
+            }
+            else if (msg == Native.WM_HOTKEY && w.ToInt32() == RecHotkeyId)
+            {
+                ToggleRecording();
                 handled = true;
             }
             return IntPtr.Zero;
@@ -1166,6 +1313,7 @@ namespace Pizarra
                 case PenKind.Punteado: return StrokeStyle.Dotted;
                 case PenKind.Aerosol: return StrokeStyle.Spray;
                 case PenKind.Arcoiris: return StrokeStyle.Rainbow;
+                case PenKind.Plasma: return StrokeStyle.Plasma;
                 default: return StrokeStyle.Plain;
             }
         }
@@ -1403,6 +1551,8 @@ namespace Pizarra
             FinishText();
             Commit();
             StoreCurrent();
+            // Blanco o negro se pierden sobre muchas ventanas: en pantalla se usa un color vivo.
+            if (screen && (InkColor == Colors.White || InkColor == Color.FromRgb(0x20, 0x20, 0x20))) InkColor = ToolbarWindow.Palette[2];
             EnterMode(screen);
         }
 
@@ -1447,20 +1597,21 @@ namespace Pizarra
             // Alfa 1: invisible, pero sigue recibiendo el ratón para dibujar sobre otras ventanas.
             Ink.Background = ScreenMode ? new SolidColorBrush(Color.FromArgb(1, 0, 0, 0)) : Brushes.Transparent;
             ApplyView();
-            ((Border)pill.Parent).Visibility = ScreenMode ? Visibility.Collapsed : Visibility.Visible;
+            ((Border)pill.Parent).Visibility = ScreenMode || Presenting ? Visibility.Collapsed : Visibility.Visible;
             pageLabel.Text = "Hoja " + (SheetIndex + 1) + "/" + Sheets.Count;
             prevBtn.IsEnabled = SheetIndex > 0;
             nextBtn.IsEnabled = SheetIndex < Sheets.Count - 1;
             string name = FilePath == null ? "" : " - " + System.IO.Path.GetFileNameWithoutExtension(FilePath);
             Title = "Pizarra" + name;
             if (Bar != null) Bar.Refresh();
+            ProChromeChanged();
         }
 
-        internal static bool IsDark(Paper p) { return p == Paper.Negra || p == Paper.Verde; }
+        internal static bool IsDark(Paper p) { return p == Paper.Negra || p == Paper.Verde || p == Paper.Cyber || p == Paper.Plano; }
 
         internal static Brush PaperBrush(Paper p)
         {
-            Color bg = p == Paper.Negra ? Color.FromRgb(0x1F, 0x24, 0x28) : p == Paper.Verde ? Color.FromRgb(0x1E, 0x4D, 0x3B) : Colors.White;
+            Color bg = PaperColor(p);
             if (p == Paper.Blanca || p == Paper.Negra || p == Paper.Verde) return new SolidColorBrush(bg);
             double w = 30, h = 30;
             if (p == Paper.Rayada) w = h = 38;
@@ -1468,6 +1619,8 @@ namespace Pizarra
             if (p == Paper.Pentagrama) { w = 40; h = 150; }
             if (p == Paper.Isometrica) { w = 34.64; h = 40; }
             if (p == Paper.Pauta) { w = 120; h = 96; }
+            if (p == Paper.Cyber) w = h = 40;
+            if (p == Paper.Plano) w = h = 100;
             var line = new Pen(new SolidColorBrush(Color.FromRgb(0xC5, 0xD3, 0xE6)), 1);
             var fine = new Pen(new SolidColorBrush(Color.FromRgb(0xE3, 0xEA, 0xF3)), 0.6);
             var dark = new Pen(new SolidColorBrush(Color.FromRgb(0x77, 0x77, 0x77)), 1);
@@ -1476,6 +1629,16 @@ namespace Pizarra
             var inv = CultureInfo.InvariantCulture;
             switch (p)
             {
+                case Paper.Cyber:
+                    group.Children.Add(new GeometryDrawing(null, new Pen(new SolidColorBrush(Color.FromArgb(0x24, 0x22, 0xD3, 0xEE)), 1), Geometry.Parse("M0,0 H40 M0,0 V40")));
+                    group.Children.Add(new GeometryDrawing(new SolidColorBrush(Color.FromArgb(0x70, 0x22, 0xD3, 0xEE)), null, new EllipseGeometry(new Point(0, 0), 1.4, 1.4)));
+                    break;
+                case Paper.Plano:
+                    var plan = new StringBuilder();
+                    for (int i = 1; i < 5; i++) plan.Append("M" + i * 20 + ",0 V100 M0," + i * 20 + " H100 ");
+                    group.Children.Add(new GeometryDrawing(null, new Pen(new SolidColorBrush(Color.FromArgb(0x26, 255, 255, 255)), 0.6), Geometry.Parse(plan.ToString())));
+                    group.Children.Add(new GeometryDrawing(null, new Pen(new SolidColorBrush(Color.FromArgb(0x60, 255, 255, 255)), 1), Geometry.Parse("M0,0 H100 M0,0 V100")));
+                    break;
                 case Paper.Cuadriculada:
                     group.Children.Add(new GeometryDrawing(null, line, Geometry.Parse("M0,0 H30 M0,0 V30")));
                     break;
@@ -1530,7 +1693,7 @@ namespace Pizarra
         {
             var panel = new StackPanel();
             Popup pop = null;
-            string[] names = { "Blanca", "Cuadriculada", "Rayada", "Puntos", "Negra", "Verde de pizarra", "Milimetrada", "Pentagrama", "Isométrica", "Pauta de caligrafía" };
+            string[] names = { "Blanca", "Cuadriculada", "Rayada", "Puntos", "Negra", "Verde de pizarra", "Milimetrada", "Pentagrama", "Isométrica", "Pauta de caligrafía", "Cyber: rejilla neón", "Plano técnico" };
             foreach (Paper p in Enum.GetValues(typeof(Paper)))
             {
                 var pp = p;
@@ -1566,6 +1729,7 @@ namespace Pizarra
             if (paper is DrawingBrush) paper.Transform = new MatrixTransform(m);
             Host.Background = paper;
             zoomLabel.Text = Math.Round(Cur.Zoom * 100) + " %";
+            ProViewChanged();
         }
 
         internal Point ViewToInk(Point v)
@@ -1609,7 +1773,7 @@ namespace Pizarra
 
         void OnWheel(object sender, MouseWheelEventArgs e)
         {
-            if (e.OriginalSource is MathGuide) return;
+            if (e.OriginalSource is MathGuide || ProWheelBlocked()) return;
             if (Tool == Tool.Spotlight)
             {
                 spotRadius = Math.Max(50, Math.Min(500, spotRadius + (e.Delta > 0 ? 15 : -15)));
@@ -1797,6 +1961,7 @@ namespace Pizarra
             foreach (var t in items) AddElement(t);
             loading = false;
             dirty = false;
+            ProContentChanged(false);
         }
 
         // ---- Deshacer: guarda una copia del estado tras cada cambio ----
@@ -1816,6 +1981,7 @@ namespace Pizarra
             StoreCurrent();
             if (Cur != ScreenSheet) Modified = true;
             Bar.Refresh();
+            ProContentChanged(true);
         }
 
         Snap Capture()
@@ -1851,6 +2017,7 @@ namespace Pizarra
         void RestoreLast()
         {
             ShowContent(Cur.Last.Strokes.Clone(), Cur.Last.Items);
+            Cur.Thumb = null;
             StoreCurrent();
             ApplyTool();
             if (Cur != ScreenSheet) Modified = true;
@@ -1901,22 +2068,28 @@ namespace Pizarra
             var list = new List<Item>();
             foreach (FrameworkElement el in Ink.Children.OfType<FrameworkElement>())
             {
-                var meta = el.Tag as Item;
-                if (meta == null) continue;
-                var it = new Item { Kind = meta.Kind, Bg = meta.Bg, X = InkCanvas.GetLeft(el), Y = InkCanvas.GetTop(el), W = el.Width, H = el.Height, Data = meta.Data };
-                var rt = el as RichTextBox;
-                if (rt != null)
-                {
-                    if (it.Kind != ItemKind.Sticky && IsBlank(rt)) continue;
-                    using (var ms = new MemoryStream())
-                    {
-                        new TextRange(rt.Document.ContentStart, rt.Document.ContentEnd).Save(ms, DataFormats.Xaml);
-                        it.Data = ms.ToArray();
-                    }
-                }
-                list.Add(it);
+                var it = ItemOf(el);
+                if (it != null) list.Add(it);
             }
             return list;
+        }
+
+        Item ItemOf(FrameworkElement el)
+        {
+            var meta = el.Tag as Item;
+            if (meta == null) return null;
+            var it = new Item { Kind = meta.Kind, Bg = meta.Bg, X = InkCanvas.GetLeft(el), Y = InkCanvas.GetTop(el), W = el.Width, H = el.Height, Data = meta.Data };
+            var rt = el as RichTextBox;
+            if (rt != null)
+            {
+                if (it.Kind != ItemKind.Sticky && IsBlank(rt)) return null;
+                using (var ms = new MemoryStream())
+                {
+                    new TextRange(rt.Document.ContentStart, rt.Document.ContentEnd).Save(ms, DataFormats.Xaml);
+                    it.Data = ms.ToArray();
+                }
+            }
+            return it;
         }
 
         internal FrameworkElement AddElement(Item t)
@@ -2216,14 +2389,11 @@ namespace Pizarra
             actions.Children.Add(Ui.MenuItem("Aceptar (Enter)", true, AcceptCorrection));
             actions.Children.Add(Ui.MenuItem("Dejar a mano (Esc)", false, CloseCorrection));
             panel.Children.Add(actions);
-            correctionPanel = new Border
-            {
-                Child = panel,
-                Background = new SolidColorBrush(Ui.PanelColor),
-                CornerRadius = new CornerRadius(8),
-                Padding = new Thickness(8),
-                Effect = new DropShadowEffect { BlurRadius = 12, ShadowDepth = 2, Opacity = 0.4 }
-            };
+            correctionBox.Background = new SolidColorBrush(Color.FromRgb(0x0B, 0x12, 0x22));
+            correctionBox.Foreground = new SolidColorBrush(Ui.Text);
+            correctionBox.CaretBrush = new SolidColorBrush(Ui.Cyan);
+            correctionBox.BorderBrush = Ui.Edge;
+            correctionPanel = Ui.Card(panel, 12, 8);
             panelLayer.Children.Add(correctionPanel);
             correctionPanel.UpdateLayout();
             Rect b = strokes.GetBounds();
@@ -2670,6 +2840,7 @@ namespace Pizarra
         void OnInkMiddleDown(object sender, MouseButtonEventArgs e)
         {
             if (e.ChangedButton == MouseButton.Right && PolyActive) { PolyFinish(); e.Handled = true; }
+            else if (e.ChangedButton == MouseButton.Right && !CorrectionOpen && !Inside<RichTextBox>(e.OriginalSource)) { ShowRadial(e.GetPosition(root)); e.Handled = true; }
             if (e.ChangedButton == MouseButton.Middle && !ScreenMode) { StartPan(e); e.Handled = true; }
         }
 
@@ -2772,6 +2943,9 @@ namespace Pizarra
         // ---- Teclado ----
         void OnKey(object sender, KeyEventArgs e)
         {
+            bool? pro = ProKey(e);
+            if (pro == true) e.Handled = true;
+            if (pro != null) return;
             bool ctrl = (Keyboard.Modifiers & ModifierKeys.Control) != 0;
             bool shift = (Keyboard.Modifiers & ModifierKeys.Shift) != 0;
             bool typing = Keyboard.FocusedElement is TextBoxBase;
@@ -3180,30 +3354,7 @@ namespace Pizarra
                     SetColor(Color.FromRgb(d.Color.R, d.Color.G, d.Color.B));
         }
 
-        internal void ShowHelp()
-        {
-            MessageBox.Show(this,
-                "Herramientas\n" +
-                "P lápiz · H resaltador · E borrador · T texto · W modo escritura · N nota · V seleccionar\n" +
-                "M mano · K láser · L línea · A flecha · R rectángulo · O elipse\n" +
-                "1-9 y 0 colores · [ y ] grosor\n\n" +
-                "Trazo punto a punto (polilínea, ortogonal, curva)\n" +
-                "Clic añade punto · doble clic, botón derecho o Enter termina · Retroceso quita el último\n" +
-                "Esc cancela · clic junto al inicio cierra · Mayús ajusta a 45 grados\n\n" +
-                "Letras a texto\n" +
-                "Escribe a mano y haz una pausa · Enter acepta · Esc deja el trazo · seguir escribiendo acepta\n\n" +
-                "Texto (al escribir)\n" +
-                "Ctrl+B negrita · Ctrl+I cursiva · Ctrl+U subrayado · Esc terminar\n\n" +
-                "Hojas\n" +
-                "Ctrl+N nueva · RePág / AvPág cambiar · rueda desplazar · Mayús+rueda horizontal\n" +
-                "Ctrl+rueda zoom · botón central arrastrar\n\n" +
-                "General\n" +
-                "Ctrl+Z deshacer · Ctrl+Y rehacer · Ctrl+S guardar · Ctrl+Mayús+S guardar como · Ctrl+O abrir\n" +
-                "Ctrl+V pegar imagen o texto · Supr borrar selección · Mayús al dibujar formas: proporcional\n" +
-                "Esc o Ctrl+Alt+D: puntero (usar el equipo sin borrar el dibujo)\n\n" +
-                "Regla y transportador: arrastrar para mover, rueda para girar (Mayús: de 1 en 1 grado).",
-                "Pizarra: atajos", MessageBoxButton.OK, MessageBoxImage.Information);
-        }
+        internal void ShowHelp() { ShowHelpOverlay(); }
     }
 
     // ==================================================================================
@@ -3212,7 +3363,11 @@ namespace Pizarra
         readonly CanvasWindow c;
         readonly Dictionary<Tool, Button> toolButtons = new Dictionary<Tool, Button>();
         readonly Dictionary<Color, Button> swatches = new Dictionary<Color, Button>();
-        readonly Button traceBtn, convertBtn;
+        readonly Button traceBtn, convertBtn, proBtn, recBtn, miniRec;
+        readonly TextBlock recLabel;
+        readonly Ellipse recDot;
+        readonly Button[] presetBtns = new Button[5];
+        internal Popup LastPop;
         readonly Button screenBtn, sheetsBtn, writeBtn, undoBtn, redoBtn, monitorBtn, miniPen, miniCursor, shapeBtn, guideBtn, presentBtn, colorBtn, fontBtn, penChevron;
         readonly Slider slider;
         readonly TextBlock sizeLabel;
@@ -3223,8 +3378,8 @@ namespace Pizarra
 
         internal static readonly Color[] Palette =
         {
-            Color.FromRgb(0x20,0x20,0x20), Colors.White, Color.FromRgb(0xE5,0x39,0x35), Color.FromRgb(0xFB,0x8C,0x00), Color.FromRgb(0xFD,0xD8,0x35),
-            Color.FromRgb(0x43,0xA0,0x47), Color.FromRgb(0x00,0xAC,0xC1), Color.FromRgb(0x1E,0x88,0xE5), Color.FromRgb(0x8E,0x24,0xAA), Color.FromRgb(0xEC,0x40,0x7A)
+            Color.FromRgb(0x20,0x20,0x20), Colors.White, Color.FromRgb(0xFF,0x3B,0x5C), Color.FromRgb(0xFF,0x9F,0x1C), Color.FromRgb(0xFF,0xE1,0x4D),
+            Color.FromRgb(0x39,0xFF,0x88), Color.FromRgb(0x22,0xD3,0xEE), Color.FromRgb(0x3B,0x82,0xF6), Color.FromRgb(0xA7,0x8B,0xFA), Color.FromRgb(0xF4,0x72,0xB6)
         };
 
         static readonly string[] ExtendedColors =
@@ -3239,9 +3394,9 @@ namespace Pizarra
 
         static readonly string[] Fonts = { "Segoe UI", "Arial", "Calibri", "Cambria", "Georgia", "Times New Roman", "Verdana", "Tahoma", "Consolas", "Courier New", "Comic Sans MS", "Segoe Print", "Segoe Script", "Ink Free", "Impact" };
 
-        static readonly string[] PenNames = { "Bolígrafo", "Lápiz", "Rotulador", "Pincel", "Neón", "Discontinuo", "Punteado", "Aerosol", "Arcoíris", "Tinta que se desvanece", "Caligrafía itálica", "Gótica", "Letra inglesa", "Estilográfica", "Firma", "Cepillo" };
+        internal static readonly string[] PenNames = { "Bolígrafo", "Lápiz", "Rotulador", "Pincel", "Neón", "Discontinuo", "Punteado", "Aerosol", "Arcoíris", "Tinta que se desvanece", "Caligrafía itálica", "Gótica", "Letra inglesa", "Estilográfica", "Firma", "Cepillo", "Plasma" };
 
-        static readonly string[] TraceNames = { "Dibujo libre", "Suavizado: elimina el temblor", "Línea recta", "Ortogonal a mano", "Geometría: dibujo a forma exacta", "Letras: escritura a texto", "Polilínea, clic a clic", "Polilínea ortogonal", "Curva por puntos" };
+        internal static readonly string[] TraceNames = { "Dibujo libre", "Suavizado: elimina el temblor", "Línea recta", "Ortogonal a mano", "Geometría: dibujo a forma exacta", "Letras: escritura a texto", "Polilínea, clic a clic", "Polilínea ortogonal", "Curva por puntos" };
 
         static Color Hex(string s)
         {
@@ -3270,12 +3425,15 @@ namespace Pizarra
             // Fila 1: modo y herramientas
             var row1 = Ui.Row();
             row1.Children.Add(Grip());
+            row1.Children.Add(Ui.Logo());
             screenBtn = Ui.Label("Pantalla", "Dibujar encima de la pantalla", 62, delegate { c.SetMode(true); });
             sheetsBtn = Ui.Label("Hojas", "Dibujar en hojas independientes", 52, delegate { c.SetMode(false); });
             writeBtn = Ui.Label("Escribir", "Modo escritura: teclea en una página de texto (W)", 58, delegate { c.EnterWriteMode(); });
-            row1.Children.Add(screenBtn);
-            row1.Children.Add(sheetsBtn);
-            row1.Children.Add(writeBtn);
+            var modes = Ui.Row();
+            modes.Children.Add(screenBtn);
+            modes.Children.Add(sheetsBtn);
+            modes.Children.Add(writeBtn);
+            row1.Children.Add(new Border { Child = modes, CornerRadius = new CornerRadius(11), BorderThickness = new Thickness(1), BorderBrush = new SolidColorBrush(Ui.Line), Background = new SolidColorBrush(Color.FromArgb(0x80, 0x05, 0x0A, 0x16)), VerticalAlignment = VerticalAlignment.Center });
             row1.Children.Add(Ui.Separator());
             AddTool(row1, Tool.Cursor, Ui.Glyph("", "Puntero: usar el equipo sin borrar el dibujo (Esc, o Ctrl+Alt+D)", delegate { c.SetTool(Tool.Cursor); }));
             AddTool(row1, Tool.Pen, Ui.Glyph("", "Lápiz (P)", delegate { c.SetTool(Tool.Pen); }));
@@ -3302,6 +3460,19 @@ namespace Pizarra
             presentBtn = Ui.Drawn("M9,2 A7,7 0 1 1 9,16 A7,7 0 1 1 9,2 Z M9,6.5 A2.5,2.5 0 1 1 9,11.5 A2.5,2.5 0 1 1 9,6.5 Z", "Presentar: láser, foco y lupa", ShowPresentMenu);
             row1.Children.Add(presentBtn);
             row1.Children.Add(Ui.Separator());
+            row1.Children.Add(Ui.Glyph("\uE721", "Paleta de comandos: busca cualquier acción (Ctrl+K)", delegate { c.ShowPalette(); }));
+            proBtn = Ui.Label("PRO", "Funciones pro: presentación, repetición, región, miniaturas, minimapa", 44, ShowProMenu);
+            row1.Children.Add(proBtn);
+            recDot = new Ellipse { Width = 10, Height = 10, Fill = new SolidColorBrush(RecRed), VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 5, 0) };
+            recLabel = new TextBlock { Text = "REC", FontFamily = Ui.Font, FontSize = 13, VerticalAlignment = VerticalAlignment.Center };
+            var recContent = Ui.Row();
+            recContent.HorizontalAlignment = HorizontalAlignment.Center;
+            recContent.Children.Add(recDot);
+            recContent.Children.Add(recLabel);
+            recBtn = new Button { Style = Ui.ButtonStyle, Content = recContent, Width = 58, ToolTip = "Grabar la pantalla en vídeo MP4 (Ctrl+Alt+R)" };
+            recBtn.Click += delegate { c.ToggleRecording(); };
+            row1.Children.Add(recBtn);
+            row1.Children.Add(Ui.Separator());
             row1.Children.Add(Ui.Glyph("", "Compactar la barra", delegate { SetCompact(true); }));
             row1.Children.Add(Ui.Glyph("", "Minimizar", delegate { c.WindowState = WindowState.Minimized; }));
             row1.Children.Add(Ui.Glyph("", "Cerrar Pizarra", delegate { c.Close(); }));
@@ -3312,7 +3483,7 @@ namespace Pizarra
             foreach (var col in Palette)
             {
                 var cc = col;
-                var dot = new Ellipse { Width = 18, Height = 18, Fill = new SolidColorBrush(cc), Stroke = new SolidColorBrush(Color.FromRgb(0x9A, 0xA0, 0xA6)), StrokeThickness = 1 };
+                var dot = new Ellipse { Width = 18, Height = 18, Fill = new SolidColorBrush(cc), Stroke = new SolidColorBrush(Color.FromArgb(0x66, 255, 255, 255)), StrokeThickness = 1 };
                 var b = new Button { Style = Ui.ButtonStyle, Content = dot, Width = 28, Height = 28, Margin = new Thickness(1, 4, 1, 4) };
                 b.Click += delegate { c.SetColor(cc); };
                 swatches[cc] = b;
@@ -3330,9 +3501,18 @@ namespace Pizarra
                 sizeLabel.Text = ((int)slider.Value).ToString();
                 c.CurrentSize = Math.Round(slider.Value);
             };
-            sizeLabel = new TextBlock { Foreground = Brushes.White, FontSize = 13, Width = 26, TextAlignment = TextAlignment.Center, VerticalAlignment = VerticalAlignment.Center };
+            sizeLabel = new TextBlock { Foreground = new SolidColorBrush(Ui.Cyan), FontFamily = Ui.Font, FontSize = 13, Width = 26, TextAlignment = TextAlignment.Center, VerticalAlignment = VerticalAlignment.Center };
             row2.Children.Add(slider);
             row2.Children.Add(sizeLabel);
+            row2.Children.Add(Ui.Separator());
+            for (int i = 0; i < presetBtns.Length; i++)
+            {
+                int slot = i;
+                presetBtns[i] = new Button { Style = Ui.ButtonStyle, Width = 30, Height = 30, Margin = new Thickness(1, 3, 1, 3) };
+                presetBtns[i].Click += delegate { c.ApplyPreset(slot); };
+                presetBtns[i].MouseRightButtonUp += delegate(object s, MouseButtonEventArgs e) { c.StorePreset(slot); e.Handled = true; };
+                row2.Children.Add(presetBtns[i]);
+            }
             row2.Children.Add(Ui.Separator());
             undoBtn = Ui.Glyph("", "Deshacer (Ctrl+Z)", delegate { c.Undo(); });
             redoBtn = Ui.Glyph("", "Rehacer (Ctrl+Y)", delegate { c.Redo(); });
@@ -3389,6 +3569,9 @@ namespace Pizarra
             miniPen = Ui.Glyph("", "Lápiz", delegate { c.SetTool(Tool.Pen); });
             miniRow.Children.Add(miniCursor);
             miniRow.Children.Add(miniPen);
+            miniRec = new Button { Style = Ui.ButtonStyle, ToolTip = "Grabar la pantalla en vídeo (Ctrl+Alt+R)", Content = new Ellipse { Width = 12, Height = 12, Fill = new SolidColorBrush(RecRed) } };
+            miniRec.Click += delegate { c.ToggleRecording(); };
+            miniRow.Children.Add(miniRec);
             miniRow.Children.Add(Ui.Glyph("", "Mostrar la barra completa", delegate { SetCompact(false); }));
             miniRow.Visibility = Visibility.Collapsed;
             mini = miniRow;
@@ -3396,15 +3579,8 @@ namespace Pizarra
             var host = new Grid();
             host.Children.Add(full);
             host.Children.Add(mini);
-            RootPanel = new Border
-            {
-                Child = host,
-                Background = new SolidColorBrush(Ui.PanelColor),
-                CornerRadius = new CornerRadius(12),
-                Padding = new Thickness(6),
-                Margin = new Thickness(12),
-                Effect = new DropShadowEffect { BlurRadius = 14, ShadowDepth = 2, Opacity = 0.45 }
-            };
+            RootPanel = Ui.Card(host, 16, 6);
+            RootPanel.Margin = new Thickness(14);
             Content = RootPanel;
         }
 
@@ -3414,7 +3590,7 @@ namespace Pizarra
             {
                 Style = Ui.ButtonStyle,
                 ToolTip = tip,
-                Content = new TextBlock { Text = text, FontFamily = new FontFamily("Segoe UI"), FontSize = 15, FontWeight = weight, FontStyle = style }
+                Content = new TextBlock { Text = text, FontFamily = Ui.Font, FontSize = 15, FontWeight = weight, FontStyle = style }
             };
             b.Click += delegate { click(); };
             return b;
@@ -3428,9 +3604,71 @@ namespace Pizarra
             fill(panel, delegate { pop.IsOpen = false; });
             pop = Ui.Flyout(anchor, panel, PlacementMode.Bottom);
             pop.IsOpen = true;
+            LastPop = pop;
         }
 
-        void ShowPenMenu()
+        // Entrada al abrir la aplicación.
+        internal void PlayIntro() { Ui.SlideIn(RootPanel, -18, 420); }
+
+        static readonly Color RecRed = Color.FromRgb(0xFF, 0x3B, 0x5C);
+
+        // Muestra el estado de la grabación; el punto parpadea solo mientras graba.
+        internal void UpdateRec()
+        {
+            bool active = c.Recording || c.CountingDown;
+            var t = c.RecordingTime;
+            recLabel.Text = c.Recording ? ((int)t.TotalMinutes).ToString("00") + ":" + t.Seconds.ToString("00") : c.CountingDown ? "…" : "REC";
+            recLabel.Foreground = active ? new SolidColorBrush(RecRed) : new SolidColorBrush(Ui.Text);
+            recBtn.ToolTip = c.Recording ? "Parar la grabación (Ctrl+Alt+R)" : c.CountingDown ? "Cancelar" : "Grabar la pantalla en vídeo MP4 (Ctrl+Alt+R)";
+            miniRec.Tag = active ? "on" : null;
+            if (c.Recording && Ui.Motion && !recDot.HasAnimatedProperties)
+                recDot.BeginAnimation(UIElement.OpacityProperty, new DoubleAnimation(1, 0.2, TimeSpan.FromMilliseconds(600)) { AutoReverse = true, RepeatBehavior = RepeatBehavior.Forever });
+            else if (!c.Recording)
+            {
+                recDot.BeginAnimation(UIElement.OpacityProperty, null);
+                recDot.Opacity = 1;
+            }
+        }
+
+        internal void ShowVideoSaved(string path, TimeSpan time)
+        {
+            OpenList(recBtn, (panel, close) =>
+            {
+                panel.Children.Add(Ui.Caption("Vídeo guardado (" + ((int)time.TotalMinutes).ToString("00") + ":" + time.Seconds.ToString("00") + ")\n" + System.IO.Path.GetFileName(path)));
+                panel.Children.Add(Ui.MenuItem("Reproducir", true, delegate { close(); System.Diagnostics.Process.Start(path); }));
+                panel.Children.Add(Ui.MenuItem("Abrir la carpeta", false, delegate { close(); System.Diagnostics.Process.Start("explorer.exe", "/select,\"" + path + "\""); }));
+            });
+        }
+
+        internal void ShowProMenu()
+        {
+            OpenList(proBtn, (panel, close) =>
+            {
+                panel.Children.Add(Ui.Caption("Presentar"));
+                panel.Children.Add(Ui.MenuItem("Modo presentación (F5)", c.Presenting, delegate { close(); c.EnterPresent(); }));
+                panel.Children.Add(Ui.MenuItem("Repetir el dibujo trazo a trazo", false, delegate { close(); c.StartReplay(); }));
+                panel.Children.Add(Ui.Caption("Vista"));
+                panel.Children.Add(Ui.MenuItem("Panel de miniaturas (F2)", c.SheetPanelOpen, delegate { close(); c.ToggleSheetPanel(); }));
+                panel.Children.Add(Ui.MenuItem("Minimapa", c.MinimapOn, delegate { close(); c.ToggleMinimap(); }));
+                panel.Children.Add(Ui.MenuItem("Ajustar la vista al contenido (Ctrl+0)", false, delegate { close(); c.FitContent(); }));
+                panel.Children.Add(Ui.Caption("Capturar y exportar"));
+                panel.Children.Add(Ui.MenuItem(c.Recording ? "Parar la grabación (Ctrl+Alt+R)" : "Grabar la pantalla en vídeo (Ctrl+Alt+R)", c.Recording, delegate { close(); c.ToggleRecording(); }));
+                panel.Children.Add(Ui.MenuItem("Capturar una región de la pantalla", false, delegate { close(); c.StartRegion(); }));
+                panel.Children.Add(Ui.MenuItem("Exportar la hoja a SVG (vectorial)", false, delegate { close(); c.ExportSvg(); }));
+                panel.Children.Add(Ui.Caption("Selección"));
+                panel.Children.Add(Ui.MenuItem("Seleccionar todo (Ctrl+A)", false, delegate { close(); c.SelectAll(); }));
+                panel.Children.Add(Ui.MenuItem("Duplicar la selección (Ctrl+D)", false, delegate { close(); c.DuplicateSelection(); }));
+                var align = Ui.Row();
+                foreach (var a in new[] { new { G = "M3,2 V16 M6,5 H15 M6,12 H11", T = "Alinear a la izquierda", M = "izquierda" }, new { G = "M9,2 V16 M4,5 H14 M6,12 H12", T = "Centrar en horizontal", M = "centro" }, new { G = "M15,2 V16 M3,5 H12 M7,12 H12", T = "Alinear a la derecha", M = "derecha" }, new { G = "M2,3 H16 M5,6 V15 M12,6 V11", T = "Alinear arriba", M = "arriba" }, new { G = "M2,9 H16 M5,4 V14 M12,6 V12", T = "Centrar en vertical", M = "medio" }, new { G = "M2,15 H16 M5,3 V12 M12,7 V12", T = "Alinear abajo", M = "abajo" } })
+                {
+                    var mode = a.M;
+                    align.Children.Add(Ui.Drawn(a.G, a.T, delegate { c.AlignSelection(mode); }));
+                }
+                panel.Children.Add(align);
+            });
+        }
+
+        internal void ShowPenMenu()
         {
             OpenList(penChevron, (panel, close) =>
             {
@@ -3442,7 +3680,7 @@ namespace Pizarra
                 foreach (PenKind k in Enum.GetValues(typeof(PenKind)))
                 {
                     var kk = k;
-                    (k >= PenKind.Caligrafia ? right : left).Children.Add(Ui.MenuItem(PenNames[(int)k], c.Pen == k, delegate { close(); c.SetPen(kk); }));
+                    (k >= PenKind.Caligrafia && k != PenKind.Plasma ? right : left).Children.Add(Ui.MenuItem(PenNames[(int)k], c.Pen == k, delegate { close(); c.SetPen(kk); }));
                 }
                 right.Children.Add(Ui.Caption("Ángulo de la plumilla"));
                 var nib = new Slider { Minimum = 0, Maximum = 90, Value = c.NibAngle, Focusable = false, Margin = new Thickness(6, 0, 6, 6) };
@@ -3570,7 +3808,9 @@ namespace Pizarra
             {
                 panel.Children.Add(Ui.MenuItem("Guardar imagen de lo que ves (PNG o JPEG)", false, delegate { close(); c.SaveImage(); }));
                 panel.Children.Add(Ui.MenuItem("Exportar todas las hojas a PDF", false, delegate { close(); c.ExportPdf(); }));
+                panel.Children.Add(Ui.MenuItem("Exportar esta hoja a SVG (vectorial)", false, delegate { close(); c.ExportSvg(); }));
                 panel.Children.Add(Ui.MenuItem("Capturar la pantalla en una hoja nueva", false, delegate { close(); c.CaptureToSheet(); }));
+                panel.Children.Add(Ui.MenuItem("Capturar una región de la pantalla", false, delegate { close(); c.StartRegion(); }));
             });
         }
 
@@ -3603,6 +3843,22 @@ namespace Pizarra
                 panel.Children.Add(row);
                 panel.Children.Add(Ui.MenuItem("Quitar resaltado", false, delegate { close(); c.SetTextHighlight(null); }));
             });
+        }
+
+        static UIElement PresetIcon(PenPreset p)
+        {
+            var stroke = new SolidColorBrush(p.Pen == PenKind.Plasma ? Color.FromRgb(0xF4, 0x72, 0xB6) : p.Ink);
+            return new System.Windows.Shapes.Path
+            {
+                Data = Geometry.Parse("M3,14 C6,4 9,14 15,4"),
+                Stroke = stroke,
+                StrokeThickness = Math.Max(1.5, Math.Min(5, p.Size * 0.7)),
+                StrokeStartLineCap = PenLineCap.Round,
+                StrokeEndLineCap = PenLineCap.Round,
+                Width = 18,
+                Height = 18,
+                Effect = p.Pen == PenKind.Neon || p.Pen == PenKind.Plasma ? new DropShadowEffect { Color = stroke.Color, BlurRadius = 8, ShadowDepth = 0, Opacity = 0.9 } : null
+            };
         }
 
         void SetCompact(bool compact)
@@ -3660,6 +3916,16 @@ namespace Pizarra
             guideBtn.Tag = c.Ruler != null || c.Protractor != null ? "on" : null;
             presentBtn.Tag = c.Tool == Tool.Laser || c.Tool == Tool.Spotlight || c.Tool == Tool.Magnifier ? "on" : null;
             colorDot.Fill = new SolidColorBrush(c.InkColor);
+            for (int i = 0; i < presetBtns.Length; i++)
+            {
+                var pr = c.Presets[i];
+                bool active = c.Tool == Tool.Pen && c.Pen == pr.Pen && c.InkColor == pr.Ink && c.PenSize == pr.Size && c.Trace == pr.Trace;
+                presetBtns[i].Tag = active ? "on" : null;
+                presetBtns[i].Content = PresetIcon(pr);
+                presetBtns[i].ToolTip = "Favorito " + (i + 1) + ": " + PenNames[(int)pr.Pen] + ", " + pr.Size + " px (Ctrl+" + (i + 1) + "). Botón derecho o Ctrl+Mayús+" + (i + 1) + ": guardar el lápiz actual";
+            }
+            UpdateRec();
+            c.ProStatus();
             fontBtn.Content = c.FontName;
             textRow.Visibility = c.Tool == Tool.Text || c.Tool == Tool.Sticky ? Visibility.Visible : Visibility.Collapsed;
 
@@ -3696,6 +3962,7 @@ namespace Pizarra
                 MessageBox.Show("Ocurrió un error:\n" + e.Exception.Message, "Pizarra", MessageBoxButton.OK, MessageBoxImage.Error);
                 e.Handled = true;
             };
+            Ui.Install(app);
             app.Run(new CanvasWindow());
         }
     }

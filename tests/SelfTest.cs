@@ -128,6 +128,301 @@ namespace Pizarra
             CanvasWindow.WriteImage(bmp, System.IO.Path.Combine(dir, name));
         }
 
+        // Interfaz completa tal como se compone en pantalla: lienzo, paneles y barra.
+        static void ShotUi(CanvasWindow c, string name)
+        {
+            Pump(c);
+            c.Bar.UpdateLayout();
+            var main = (FrameworkElement)c.Content;
+            var bar = (FrameworkElement)c.Bar.Content;
+            double w = main.ActualWidth, h = main.ActualHeight, bw = c.Bar.ActualWidth, bh = c.Bar.ActualHeight;
+            var bmp = new RenderTargetBitmap((int)w, (int)h, 96, 96, PixelFormats.Pbgra32);
+            var dv = new DrawingVisual();
+            using (var dc = dv.RenderOpen())
+            {
+                dc.DrawRectangle(new VisualBrush(main), null, new Rect(0, 0, w, h));
+                if (c.Bar.IsVisible) dc.DrawRectangle(new VisualBrush(bar), null, new Rect((w - bw) / 2, 4, bw, bh));
+            }
+            bmp.Render(dv);
+            CanvasWindow.WriteImage(bmp, System.IO.Path.Combine(dir, name));
+        }
+
+        static void ShotPopup(CanvasWindow c, string name)
+        {
+            var el = (FrameworkElement)c.Bar.LastPop.Child;
+            el.UpdateLayout();
+            var bmp = new RenderTargetBitmap((int)el.ActualWidth + 28, (int)el.ActualHeight + 28, 96, 96, PixelFormats.Pbgra32);
+            var dv = new DrawingVisual();
+            using (var dc = dv.RenderOpen())
+            {
+                dc.DrawRectangle(new SolidColorBrush(CanvasWindow.PaperColor(Paper.Cyber)), null, new Rect(0, 0, bmp.Width, bmp.Height));
+                dc.DrawRectangle(new VisualBrush(el), null, new Rect(14, 14, el.ActualWidth, el.ActualHeight));
+            }
+            bmp.Render(dv);
+            CanvasWindow.WriteImage(bmp, System.IO.Path.Combine(dir, name));
+            c.Bar.LastPop.IsOpen = false;
+        }
+
+        // Pulsación real: recorre el mismo camino que una tecla del usuario.
+        static void Press(CanvasWindow c, Key k)
+        {
+            c.RaiseEvent(new KeyEventArgs(Keyboard.PrimaryDevice, PresentationSource.FromVisual(c), 0, k) { RoutedEvent = Keyboard.PreviewKeyDownEvent });
+            Pump(c);
+        }
+
+        static void RunPro(CanvasWindow c)
+        {
+            // --- Tema y hoja de muestra ---
+            c.GoToSheet(0);
+            c.AddSheet();
+            c.SetPaper(Paper.Cyber);
+            c.SetColor(Colors.White);
+            Check("hoja cyber es oscura", CanvasWindow.IsDark(Paper.Cyber) && CanvasWindow.IsDark(Paper.Plano));
+            Check("hoja nueva por defecto cyber", new Sheet().Paper == Paper.Cyber);
+            c.SetPen(PenKind.Plasma);
+            c.PenSize = 8;
+            c.ApplyTool();
+            var plasma = Ink(c, Wave(160, 240, 620));
+            Check("plasma es trazo enriquecido", c.Ink.Strokes.Last() is RichStroke);
+            c.SetPen(PenKind.Neon);
+            c.SetColor(ToolbarWindow.Palette[6]);
+            c.PenSize = 5;
+            c.ApplyTool();
+            Ink(c, Wave(160, 340, 620));
+            c.SetColor(ToolbarWindow.Palette[8]);
+            DrawShape(c, ShapeKind.Hexagon, 840, 200, 1080, 420);
+            c.SetColor(ToolbarWindow.Palette[5]);
+            DrawShape(c, ShapeKind.Arrow, 200, 480, 700, 480);
+            c.SetTool(Tool.Text);
+            c.SetColor(Colors.White);
+            var label = c.PlaceText(new Point(200, 520));
+            Type(label, "Pizarra pro con ñ & <acentos>");
+            c.Ink.Focus();
+            c.SetPen(PenKind.Boligrafo);
+            c.PenSize = 3;
+            c.ApplyTool();
+            Pump(c);
+            ShotUi(c, "ui-principal.png");
+            RenderBar(c, "ui-barra.png");
+            int demo = c.SheetIndex, demoStrokes = c.Ink.Strokes.Count;
+
+            // --- Menús con el tema aplicado ---
+            c.Bar.ShowPenMenu();
+            ShotPopup(c, "ui-menu-lapices.png");
+            c.Bar.ShowProMenu();
+            ShotPopup(c, "ui-menu-pro.png");
+
+            // --- Paleta de comandos ---
+            var cmds = c.BuildCommands();
+            Check("paleta: comandos sin nombre repetido", cmds.Select(x => x.Name).Distinct().Count() == cmds.Count && cmds.Count > 60);
+            Check("paleta: ignora acentos", CanvasWindow.FilterCommands(cmds, "region")[0].Name == "Capturar una región de la pantalla");
+            Check("paleta: varias palabras", CanvasWindow.FilterCommands(cmds, "lapiz plasma").Single().Name == "Lápiz: Plasma");
+            Check("paleta: primero lo que empieza igual", CanvasWindow.FilterCommands(cmds, "hoja")[0].Name.StartsWith("Hoja"));
+            Check("paleta: sin resultados", CanvasWindow.FilterCommands(cmds, "zzzz").Count == 0);
+            c.ShowPalette();
+            Pump(c);
+            ShotUi(c, "ui-paleta.png");
+            Check("paleta: abierta", c.PaletteOpen);
+            Press(c, Key.Down);
+            Check("paleta: flecha mueve", c.PaletteIndex == 1);
+            Press(c, Key.Up);
+            Press(c, Key.Up);
+            Check("paleta: flecha da la vuelta", c.PaletteIndex == 8);
+            c.PaletteBox.Text = "minimapa";
+            Pump(c);
+            bool mapOn = c.MinimapOn;
+            Press(c, Key.Enter);
+            Check("paleta: Enter ejecuta y cierra", c.MinimapOn != mapOn && !c.PaletteOpen);
+            c.ToggleMinimap();
+            c.ShowPalette();
+            Press(c, Key.Escape);
+            Check("paleta: Esc cierra sin ejecutar", !c.PaletteOpen && c.MinimapOn == mapOn);
+
+            // --- Menú radial ---
+            c.ShowRadial(new Point(5, 5));
+            Pump(c);
+            Check("radial: abierto", c.RadialOpen);
+            Press(c, Key.Escape);
+            Check("radial: Esc cierra", !c.RadialOpen);
+            c.ShowRadial(new Point(640, 330));
+            Pump(c);
+            ShotUi(c, "ui-radial.png");
+            c.RadialPick(1);
+            Check("radial: elige herramienta y cierra", c.Tool == Tool.Highlighter && !c.RadialOpen);
+            c.SetTool(Tool.Pen);
+
+            // --- Vista y minimapa ---
+            Rect content = c.ContentBounds();
+            Rect dom = Minimap.Domain(content, c.ViewRect());
+            Check("minimapa: abarca contenido y vista", dom.Contains(content) && dom.Contains(c.ViewRect()));
+            Check("minimapa: visible con contenido", c.Map.Visibility == Visibility.Visible);
+            c.CenterViewOn(new Point(3000, 2000));
+            Check("centrar vista", Math.Abs(c.ViewToInk(new Point(c.Host.ActualWidth / 2, c.Host.ActualHeight / 2)).X - 3000) < 1);
+            c.FitContent();
+            Check("ajustar: todo el contenido a la vista", c.ViewRect().Contains(content));
+            c.ResetView();
+            c.Map.UpdateView();
+
+            // --- Favoritos ---
+            var fmt = CanvasWindow.FormatPreset(new PenPreset { Pen = PenKind.Gotica, Ink = Color.FromRgb(1, 2, 3), Size = 7.5, Trace = TraceMode.Curva, Opacity = 0.5 });
+            var back = CanvasWindow.ParsePreset(fmt);
+            Check("favorito: ida y vuelta", back != null && back.Pen == PenKind.Gotica && back.Ink == Color.FromRgb(1, 2, 3) && back.Size == 7.5 && back.Trace == TraceMode.Curva && back.Opacity == 0.5);
+            Check("favorito: archivo dañado se ignora", CanvasWindow.ParsePreset("9999;1;2;3;4;0;1") == null && CanvasWindow.ParsePreset("basura") == null && CanvasWindow.ParsePreset("0;1;2;3;9000;0;1") == null);
+            c.ApplyPreset(1);
+            Check("favorito: aplica lápiz", c.Pen == PenKind.Neon && c.Tool == Tool.Pen && c.PenSize == 5);
+            c.SetColor(ToolbarWindow.Palette[9]);
+            c.StorePreset(4);
+            Check("favorito: guarda el lápiz actual", c.Presets[4].Pen == PenKind.Neon && c.Presets[4].Ink == ToolbarWindow.Palette[9]);
+            c.SetPen(PenKind.Boligrafo);
+
+            // --- Selección ---
+            c.SelectAll();
+            int selected = c.Ink.GetSelectedStrokes().Count;
+            Check("seleccionar todo", selected == demoStrokes && c.Ink.GetSelectedElements().Count == 1);
+            int texts = c.Ink.Children.Count;
+            c.DuplicateSelection();
+            Check("duplicar selección", c.Ink.Strokes.Count == demoStrokes * 2 && c.Ink.Children.Count == texts * 2);
+            Check("duplicado desplazado", c.Ink.GetSelectedStrokes().Count == demoStrokes);
+            c.Undo();
+            Check("deshacer duplicado", c.Ink.Strokes.Count == demoStrokes && c.Ink.Children.Count == texts);
+            c.SelectAll();
+            c.AlignSelection("izquierda");
+            var lefts = c.Ink.GetSelectedStrokes().Select(s => s.GetBounds().Left).ToList();
+            Check("alinear a la izquierda", lefts.Max() - lefts.Min() < 0.01);
+            c.Undo();
+            c.SelectAll();
+            c.AlignSelection("abajo");
+            var bottoms = c.Ink.GetSelectedStrokes().Select(s => s.GetBounds().Bottom).ToList();
+            Check("alinear abajo", bottoms.Max() - bottoms.Min() < 0.01);
+            c.Undo();
+            c.SetTool(Tool.Pen);
+            Check("selección no altera tras deshacer", c.Ink.Strokes.Count == demoStrokes);
+
+            // --- Miniaturas ---
+            c.ToggleSheetPanel();
+            Check("miniaturas: todas generadas", c.SheetPanelOpen && c.Sheets.All(s => s.Thumb != null));
+            Check("miniaturas: no cambian la hoja", c.SheetIndex == demo && c.Ink.Strokes.Count == demoStrokes && c.Cur.Undo.Count > 0);
+            Pump(c);
+            ShotUi(c, "ui-miniaturas.png");
+            Ink(c, Wave(160, 620, 300));
+            Check("miniatura se invalida al editar", c.Cur.Thumb == null);
+            c.Undo();
+            c.ToggleSheetPanel();
+            Press(c, Key.F2);
+            Check("F2 abre miniaturas", c.SheetPanelOpen);
+            Press(c, Key.F2);
+            Check("F2 cierra miniaturas", !c.SheetPanelOpen);
+
+            // --- Presentación ---
+            int undoCount = c.Cur.Undo.Count;
+            Press(c, Key.F5);
+            Check("presentación: oculta la barra", c.Presenting && !c.Bar.IsVisible && c.Map.Visibility != Visibility.Visible);
+            Pump(c);
+            ShotUi(c, "ui-presentacion.png");
+            int at = c.SheetIndex;
+            Press(c, Key.Right);
+            Check("presentación: flecha avanza", c.SheetIndex == at + 1);
+            Press(c, Key.Left);
+            Check("presentación: flecha retrocede", c.SheetIndex == at);
+            Press(c, Key.Escape);
+            Check("presentación: Esc restaura", !c.Presenting && c.Bar.IsVisible && c.Map.Visibility == Visibility.Visible);
+
+            // --- Repetición ---
+            int before = c.Ink.Strokes.Count;
+            bool modBefore = c.Modified;
+            c.ReplayBegin();
+            Check("repetición: abierta", c.Replaying && c.ReplayStrokeCount == 0);
+            c.ReplayAdvance(1);
+            Check("repetición: avanza por puntos", c.ReplayStrokeCount == 1);
+            Pump(c);
+            int guard = 0;
+            while (c.ReplayAdvance(25) && guard++ < 100000) { }
+            Check("repetición: dibuja todos los trazos", c.ReplayStrokeCount == before && c.ReplayDone == c.ReplayTotal);
+            Pump(c);
+            ShotUi(c, "ui-repeticion.png");
+            c.StopReplay();
+            Check("repetición: no toca la hoja", !c.Replaying && c.Ink.Strokes.Count == before && c.Cur.Undo.Count == undoCount && c.Modified == modBefore);
+
+            // --- SVG ---
+            string svg = c.BuildSvg();
+            File.WriteAllText(System.IO.Path.Combine(dir, "prueba.svg"), svg, new System.Text.UTF8Encoding(false));
+            var xml = new System.Xml.XmlDocument();
+            xml.LoadXml(svg);
+            var ns = new System.Xml.XmlNamespaceManager(xml.NameTable);
+            ns.AddNamespace("s", "http://www.w3.org/2000/svg");
+            Check("SVG válido con todos los trazos", xml.SelectNodes("//s:path", ns).Count >= before);
+            var textNode = xml.SelectSingleNode("//s:text", ns);
+            Check("SVG: texto escapado con ñ", textNode != null && textNode.InnerText == "Pizarra pro con ñ & <acentos>");
+            Check("SVG: decimales con punto", !System.Text.RegularExpressions.Regex.IsMatch(xml.DocumentElement.GetAttribute("viewBox"), @"\d,\d"));
+            Check("SVG: fondo de la hoja", xml.SelectSingleNode("//s:rect", ns).Attributes["fill"].Value == "#0A0F1E");
+
+            // --- Región (con un mapa de bits de prueba) ---
+            int sheetsBefore = c.Sheets.Count;
+            using (var bmp = new System.Drawing.Bitmap(800, 600))
+                c.CompleteRegion(bmp, new Rect(20, 30, 200, 100), false);
+            var cropped = c.Ink.Children.OfType<Image>().SingleOrDefault();
+            Check("región: hoja nueva con el recorte", c.Sheets.Count == sheetsBefore + 1 && cropped != null && Math.Abs(cropped.Width - 200) < 2 && Math.Abs(cropped.Height - 100) < 2);
+            svg = c.BuildSvg();
+            Check("SVG: incluye imágenes", svg.Contains("<image ") && svg.Contains("base64,"));
+            c.RemoveCurrentSheet();
+            using (var bmp = new System.Drawing.Bitmap(50, 50))
+            {
+                c.CompleteRegion(bmp, new Rect(100, 100, 40, 40), false);
+                Check("región fuera de la imagen no hace nada", c.Sheets.Count == sheetsBefore);
+            }
+
+            // --- Vídeo ---
+            Check("vídeo: medidas pares", ScreenRecorder.OutputSize(1921, 1081) == new Size(1920, 1080));
+            Check("vídeo: limita a 4K", ScreenRecorder.OutputSize(5120, 1440) == new Size(3840, 1080));
+            string clip = System.IO.Path.Combine(dir, "prueba.mp4");
+            var rec = new ScreenRecorder(clip, new System.Drawing.Rectangle(0, 0, 321, 241));
+            rec.Start();
+            Check("vídeo: arranca", rec.Error == null);
+            System.Threading.Thread.Sleep(1200);
+            rec.Stop();
+            Check("vídeo: fotogramas a su ritmo", rec.Error == null && rec.Frames >= 20 && rec.Frames <= 42);
+            var mp4 = File.ReadAllBytes(clip);
+            Check("vídeo: archivo MP4", mp4.Length > 500 && System.Text.Encoding.ASCII.GetString(mp4, 4, 4) == "ftyp");
+            File.Delete(clip);
+            var bad = new ScreenRecorder(System.IO.Path.Combine(dir, "no-existe", "x.mp4"), new System.Drawing.Rectangle(0, 0, 320, 240));
+            bad.Start();
+            Check("vídeo: ruta inválida da error sin bloquear", bad.Error != null);
+            bad.Stop();
+            c.ToggleRecording();
+            Check("vídeo: cuenta atrás", c.CountingDown && !c.Recording);
+            Pump(c);
+            ShotUi(c, "ui-cuenta-atras.png");
+            c.ToggleRecording();
+            Check("vídeo: cancelar cuenta atrás", !c.CountingDown && !c.Recording);
+            string clip2 = System.IO.Path.Combine(dir, "sub", "prueba2.mp4");
+            Check("vídeo: empieza creando la carpeta", c.BeginRecording(clip2) && c.Recording);
+            Check("vídeo: excluye la barra", c.BarDisplayAffinity == 0x11);
+            c.Bar.UpdateRec();
+            RenderBar(c, "ui-barra-grabando.png");
+            System.Threading.Thread.Sleep(600);
+            var saved = c.EndRecording();
+            Check("vídeo: termina y restaura la barra", !c.Recording && c.BarDisplayAffinity == 0 && saved != null && File.Exists(saved.Value.Path) && saved.Value.Time.TotalSeconds > 0.4);
+            Check("vídeo: terminar dos veces no falla", c.EndRecording() == null);
+            File.Delete(clip2);
+
+            // --- Ayuda ---
+            Press(c, Key.F1);
+            Check("ayuda: abierta", c.HelpOpen);
+            Pump(c);
+            ShotUi(c, "ui-ayuda.png");
+            Press(c, Key.Escape);
+            Check("ayuda: Esc cierra", !c.HelpOpen);
+
+            // --- Modo pantalla ---
+            c.SetColor(Colors.White);
+            c.SetMode(true);
+            Check("pantalla: color visible", c.InkColor == ToolbarWindow.Palette[2]);
+            Check("pantalla: sin paneles de hoja", c.Map.Visibility != Visibility.Visible);
+            c.SetMode(false);
+            Check("hojas: minimapa de vuelta", c.Map.Visibility == Visibility.Visible);
+            c.GoToSheet(0);
+        }
+
         static void Run(CanvasWindow c)
         {
             try
@@ -677,6 +972,8 @@ namespace Pizarra
                 Check("captura crea hoja con imagen", c.Sheets.Count == sh + 1 && c.Ink.Children.OfType<Image>().Count() == 1);
                 c.RemoveCurrentSheet();
 
+                RunPro(c);
+
                 if (c.MonitorCount > 1)
                 {
                     double l = c.Left;
@@ -704,6 +1001,8 @@ namespace Pizarra
             CanvasWindow.AutosaveEnabled = false;
             log = new StreamWriter(System.IO.Path.Combine(dir, "resultado.txt"));
             var app = new Application();
+            Ui.Install(app);
+            Ui.Motion = false;
             app.DispatcherUnhandledException += delegate(object s, DispatcherUnhandledExceptionEventArgs e)
             {
                 log.WriteLine("EXCEPCION UI " + e.Exception); log.Flush(); e.Handled = true; fails++;

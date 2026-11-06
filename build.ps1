@@ -9,10 +9,16 @@ $ico = Join-Path $env:TEMP 'pizarra-icon.ico'
 $bmp = New-Object System.Drawing.Bitmap 256, 256
 $g = [System.Drawing.Graphics]::FromImage($bmp)
 $g.SmoothingMode = 'AntiAlias'
-$g.FillRectangle((New-Object System.Drawing.SolidBrush ([System.Drawing.Color]::FromArgb(32, 33, 36))), 16, 16, 224, 224)
-$pen = New-Object System.Drawing.Pen ([System.Drawing.Color]::FromArgb(138, 180, 248)), 24
+$hex = [System.Drawing.PointF[]]@((New-Object System.Drawing.PointF 128, 8), (New-Object System.Drawing.PointF 232, 68), (New-Object System.Drawing.PointF 232, 188), (New-Object System.Drawing.PointF 128, 248), (New-Object System.Drawing.PointF 24, 188), (New-Object System.Drawing.PointF 24, 68))
+$g.FillPolygon((New-Object System.Drawing.SolidBrush ([System.Drawing.Color]::FromArgb(10, 15, 30))), $hex)
+$cyan = [System.Drawing.Color]::FromArgb(34, 211, 238); $violet = [System.Drawing.Color]::FromArgb(167, 139, 250)
+$grad = New-Object System.Drawing.Drawing2D.LinearGradientBrush ((New-Object System.Drawing.Point 24, 8), (New-Object System.Drawing.Point 232, 248), $cyan, $violet)
+$edge = New-Object System.Drawing.Pen $grad, 10
+$edge.LineJoin = 'Round'
+$g.DrawPolygon($edge, $hex)
+$pen = New-Object System.Drawing.Pen $grad, 22
 $pen.StartCap = 'Round'; $pen.EndCap = 'Round'
-$g.DrawBezier($pen, 56, 180, 100, 40, 130, 220, 200, 76)
+$g.DrawBezier($pen, 68, 172, 104, 60, 134, 208, 190, 84)
 $g.Dispose()
 $ms = New-Object System.IO.MemoryStream
 $bmp.Save($ms, [System.Drawing.Imaging.ImageFormat]::Png)
@@ -36,6 +42,8 @@ $args = @(
 )
 foreach ($d in $Define) { $args += "/define:$d" }
 $args += "$PSScriptRoot\Pizarra.cs"
+$args += "$PSScriptRoot\Pro.cs"
+$args += "$PSScriptRoot\Video.cs"
 $args += $Extra
 & "$fw\csc.exe" @args
 if ($LASTEXITCODE -ne 0) { throw "Error de compilacion" }
