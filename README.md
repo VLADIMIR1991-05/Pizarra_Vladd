@@ -26,7 +26,7 @@ El programa no está firmado, así que Windows puede avisar al abrirlo: pulsa **
 | Minimapa | Vista general de la hoja; clic o arrastre para moverse. `Ctrl+0` ajusta la vista al contenido |
 | Presentación | `F5`: pantalla limpia, flechas para cambiar de hoja y cronómetro |
 | Repetición | Reproduce el dibujo trazo a trazo, sin modificar la hoja. Muestra solo los trazos, no textos ni imágenes |
-| Grabar vídeo | Botón **REC** o `Ctrl+Alt+R`: tras una cuenta atrás, graba el monitor con el cursor en MP4 (H.264, 30 fps) en `Vídeos\Pizarra`. La barra de herramientas no sale en el vídeo. Sin sonido |
+| Grabar vídeo | Botón **REC** o `Ctrl+Alt+R`: tras una cuenta atrás, graba el monitor con el cursor en MP4 (H.264, 30 fps) en `Vídeos\Pizarra`, con micrófono y audio del equipo (AAC); cada uno se activa en la flecha junto a **REC**. La barra de herramientas no sale en el vídeo |
 | Captura de región | Congela la pantalla, se arrastra un recuadro y el recorte va al portapapeles y a una hoja nueva |
 | Exportar SVG | Vectorial, con trazos, texto e imágenes. Neón, plasma y aerosol se simplifican |
 | Selección | `Ctrl+A` todo, `Ctrl+D` duplicar y alinear en 6 direcciones desde el botón **PRO** |
@@ -72,6 +72,6 @@ Las pruebas llaman directamente al código: no sustituyen a probar con un ratón
 
 ## No incluido
 
-Capas, colaboración en tiempo real, nube, importar PDF y sonido en los vídeos.
+Capas, colaboración en tiempo real, nube, importar PDF.
 
 La conversión de letras a texto necesita el paquete de escritura a mano de Windows para el idioma; si falta, la aplicación indica dónde instalarlo.

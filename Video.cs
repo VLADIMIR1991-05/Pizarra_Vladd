@@ -1,6 +1,8 @@
 // Grabación de la pantalla a MP4 (H.264) con Media Foundation, incluido en Windows.
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
+using System.Linq;
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Threading;
@@ -87,6 +89,14 @@ namespace Pizarra
         public static readonly Guid Video = new Guid("73646976-0000-0010-8000-00AA00389B71");
         public static readonly Guid H264 = new Guid("34363248-0000-0010-8000-00AA00389B71");
         public static readonly Guid Rgb32 = new Guid("00000016-0000-0010-8000-00AA00389B71");
+        public static readonly Guid Audio = new Guid("73647561-0000-0010-8000-00AA00389B71");
+        public static readonly Guid Aac = new Guid("00001610-0000-0010-8000-00AA00389B71");
+        public static readonly Guid Pcm = new Guid("00000001-0000-0010-8000-00AA00389B71");
+        public static readonly Guid AudioChannels = new Guid("37e48bf5-645e-4c5b-89de-ada9e29b696a");
+        public static readonly Guid AudioRate = new Guid("5faeeae7-0290-4c31-9e8a-c534f68d9dba");
+        public static readonly Guid AudioBytesPerSecond = new Guid("1aab75c8-cfef-451c-ab95-ac034b8e1731");
+        public static readonly Guid AudioBlock = new Guid("322de230-9eeb-43bd-ab7a-ff412251541d");
+        public static readonly Guid AudioBits = new Guid("f2deb57f-40fa-4764-aa33-ed4f2d1ff669");
     }
 
     static class Gdi
@@ -129,10 +139,22 @@ namespace Pizarra
         IntPtr lastCursor;
         int hotX, hotY;
 
-        public ScreenRecorder(string file, System.Drawing.Rectangle screenArea)
+        // Margen para que lleguen los paquetes de audio antes de escribirlos: no retrasa el sonido.
+        const int AudioMargin = AudioMath.Rate * 150 / 1000;
+        readonly bool wantMic, wantSystem;
+        readonly List<AudioSource> sources = new List<AudioSource>();
+        readonly List<string> notes = new List<string>();
+        float[] audioMix = new float[0];
+        long audioWritten, origin;
+
+        public ScreenRecorder(string file, System.Drawing.Rectangle screenArea) : this(file, screenArea, false, false) { }
+
+        public ScreenRecorder(string file, System.Drawing.Rectangle screenArea, bool mic, bool systemAudio)
         {
             path = file;
             area = screenArea;
+            wantMic = mic;
+            wantSystem = systemAudio;
             var size = OutputSize(area.Width, area.Height);
             width = (int)size.Width;
             height = (int)size.Height;
@@ -142,6 +164,11 @@ namespace Pizarra
         public Exception Error { get { return error; } }
         public int Frames { get { return frames; } }
         public TimeSpan Elapsed { get { return clock.Elapsed; } }
+        public bool HasAudio { get { return sources.Count > 0; } }
+        // Avisos sobre el sonido; no se modifican mientras el hilo de grabación solo los lee.
+        public string Notes { get { lock (notes) return string.Join("\n", notes); } }
+
+        void Note(string text) { lock (notes) notes.Add(text); }
 
         // H.264 exige medidas pares; las pantallas enormes se reducen a 4K.
         internal static Size OutputSize(int w, int h)
@@ -179,6 +206,102 @@ namespace Pizarra
             return t;
         }
 
+        static IMFMediaType AudioType(Guid subtype, int bytesPerSecond)
+        {
+            IMFMediaType t;
+            Mf.MFCreateMediaType(out t);
+            t.SetGUID(Mf.MajorType, Mf.Audio);
+            t.SetGUID(Mf.Subtype, subtype);
+            t.SetUINT32(Mf.AudioBits, 16);
+            t.SetUINT32(Mf.AudioRate, AudioMath.Rate);
+            t.SetUINT32(Mf.AudioChannels, 2);
+            t.SetUINT32(Mf.AudioBytesPerSecond, bytesPerSecond);
+            return t;
+        }
+
+        // Un fallo de sonido nunca impide grabar la imagen.
+        void OpenAudio(IMFSinkWriter writer, out int stream)
+        {
+            stream = -1;
+            foreach (var system in new[] { false, true })
+            {
+                if (!(system ? wantSystem : wantMic)) continue;
+                string name = system ? "audio del equipo" : "micrófono";
+                try { sources.Add(new AudioSource(system)); }
+                catch (Exception ex) { if (ex is COMException || ex is InvalidCastException) Note(AudioSource.Explain(name, ex)); else throw; }
+            }
+            if (sources.Count == 0) return;
+            try
+            {
+                var output = AudioType(Mf.Aac, 24000); // 192 kbit/s
+                writer.AddStream(output, out stream);
+                Marshal.ReleaseComObject(output);
+                var input = AudioType(Mf.Pcm, AudioMath.Rate * 4);
+                input.SetUINT32(Mf.AudioBlock, 4);
+                writer.SetInputMediaType(stream, input, IntPtr.Zero);
+                Marshal.ReleaseComObject(input);
+            }
+            catch (COMException ex)
+            {
+                Note("El vídeo se grabó sin sonido: " + ex.Message);
+                foreach (var s in sources) s.Close();
+                sources.Clear();
+                stream = -1;
+            }
+        }
+
+        static long Now100ns() { return (long)(Stopwatch.GetTimestamp() * (10000000.0 / Stopwatch.Frequency)); }
+
+        // Recoge el audio y escribe la mezcla hasta upTo. Todo se escribe desde este hilo.
+        void PumpAudio(IMFSinkWriter writer, int stream, long upTo)
+        {
+            foreach (var s in sources.ToList())
+            {
+                try { s.Poll(origin); }
+                catch (COMException ex)
+                {
+                    Note("Se perdió el " + s.Name + " durante la grabación: " + ex.Message);
+                    sources.Remove(s);
+                }
+            }
+            while (audioWritten < upTo)
+            {
+                int frames = (int)Math.Min(upTo - audioWritten, AudioMath.Rate / 10);
+                if (audioMix.Length < frames * 2) audioMix = new float[frames * 2];
+                Array.Clear(audioMix, 0, frames * 2);
+                foreach (var s in sources) s.Track.MixInto(audioWritten, frames, audioMix);
+                WriteAudio(writer, stream, frames);
+                audioWritten += frames;
+            }
+        }
+
+        void WriteAudio(IMFSinkWriter writer, int stream, int frames)
+        {
+            IMFMediaBuffer buffer = null;
+            IMFSample sample = null;
+            try
+            {
+                int length = frames * 4;
+                Mf.MFCreateMemoryBuffer(length, out buffer);
+                IntPtr data;
+                int max, cur;
+                buffer.Lock(out data, out max, out cur);
+                for (int i = 0; i < frames * 2; i++) Marshal.WriteInt16(data, i * 2, AudioMath.ToPcm16(audioMix[i]));
+                buffer.Unlock();
+                buffer.SetCurrentLength(length);
+                Mf.MFCreateSample(out sample);
+                sample.AddBuffer(buffer);
+                sample.SetSampleTime(audioWritten * 10000000 / AudioMath.Rate);
+                sample.SetSampleDuration(frames * 10000000L / AudioMath.Rate);
+                writer.WriteSample(stream, sample);
+            }
+            finally
+            {
+                if (sample != null) Marshal.ReleaseComObject(sample);
+                if (buffer != null) Marshal.ReleaseComObject(buffer);
+            }
+        }
+
         void Run()
         {
             bool started = false, timer = false;
@@ -197,6 +320,8 @@ namespace Pizarra
                 var input = VideoType(Mf.Rgb32, width, height);
                 writer.SetInputMediaType(stream, input, IntPtr.Zero);
                 Marshal.ReleaseComObject(input);
+                int audioStream;
+                OpenAudio(writer, out audioStream);
                 writer.BeginWriting();
 
                 // Altura positiva: filas de abajo arriba, el orden que espera RGB32 en Media Foundation.
@@ -213,6 +338,8 @@ namespace Pizarra
 
                 int length = width * height * 4;
                 long duration = TimeSpan.TicksPerSecond / Fps, next = 0;
+                foreach (var s in sources) s.Start();
+                origin = Now100ns();
                 clock.Start();
                 ready.Set();
                 do
@@ -223,17 +350,20 @@ namespace Pizarra
                     Gdi.GdiFlush();
                     WriteFrame(writer, stream, bits, length, time, duration);
                     frames++;
+                    if (audioStream >= 0) PumpAudio(writer, audioStream, Math.Max(0, clock.Elapsed.Ticks * AudioMath.Rate / 10000000 - AudioMargin));
                     next += duration;
                     long wait = (next - clock.Elapsed.Ticks) / TimeSpan.TicksPerMillisecond;
                     if (wait > 0) Thread.Sleep((int)wait);
                     else if (wait < -500) next = clock.Elapsed.Ticks; // no intentar recuperar un retraso largo
                 }
                 while (!stop);
+                if (audioStream >= 0) PumpAudio(writer, audioStream, clock.Elapsed.Ticks * AudioMath.Rate / 10000000);
                 writer.Finish();
             }
             catch (Exception ex) { error = ex; }
             finally
             {
+                foreach (var s in sources) s.Close();
                 if (timer) Gdi.timeEndPeriod(1);
                 if (oldBmp != IntPtr.Zero) Gdi.SelectObject(mem, oldBmp);
                 if (dib != IntPtr.Zero) Native.DeleteObject(dib);
@@ -302,6 +432,46 @@ namespace Pizarra
         System.Windows.Controls.TextBlock countdownText;
         int countdown;
 
+        internal bool RecordMic = true, RecordSystem = true;
+
+        static string AudioSettingsPath
+        {
+            get { return System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Pizarra", "grabacion.txt"); }
+        }
+
+        internal string RecordSoundLabel
+        {
+            get { return RecordMic && RecordSystem ? "Micrófono y audio del equipo" : RecordMic ? "Solo micrófono" : RecordSystem ? "Solo audio del equipo" : "Sin sonido"; }
+        }
+
+        internal void SetRecordSound(bool mic, bool system)
+        {
+            RecordMic = mic;
+            RecordSystem = system;
+            Bar.UpdateRec();
+            if (!AutosaveEnabled) return;
+            try
+            {
+                Directory.CreateDirectory(System.IO.Path.GetDirectoryName(AudioSettingsPath));
+                File.WriteAllText(AudioSettingsPath, (mic ? "1" : "0") + (system ? "1" : "0"));
+            }
+            catch (IOException) { }
+            catch (UnauthorizedAccessException) { }
+        }
+
+        void LoadRecordSound()
+        {
+            if (!AutosaveEnabled) return;
+            try
+            {
+                if (!File.Exists(AudioSettingsPath)) return;
+                string v = File.ReadAllText(AudioSettingsPath).Trim();
+                if (v.Length == 2) { RecordMic = v[0] == '1'; RecordSystem = v[1] == '1'; }
+            }
+            catch (IOException) { }
+            catch (UnauthorizedAccessException) { }
+        }
+
         internal bool Recording { get { return recorder != null; } }
         internal bool CountingDown { get { return countdownRoot != null; } }
         internal TimeSpan RecordingTime { get { return recorder != null ? recorder.Elapsed : TimeSpan.Zero; } }
@@ -318,7 +488,7 @@ namespace Pizarra
             if (CountingDown) { CancelCountdown(); return; }
             if (!Recording) { StartCountdown(); return; }
             var saved = EndRecording();
-            if (saved != null) Bar.ShowVideoSaved(saved.Value.Path, saved.Value.Time);
+            if (saved != null) Bar.ShowVideoSaved(saved.Value);
         }
 
         void StartCountdown()
@@ -327,7 +497,7 @@ namespace Pizarra
             countdownText = new System.Windows.Controls.TextBlock { Text = "3", Foreground = Ui.Accent, FontFamily = Ui.Font, FontSize = 150, TextAlignment = TextAlignment.Center, Margin = new Thickness(50, 0, 50, 0) };
             var body = new StackPanel();
             body.Children.Add(countdownText);
-            var hint = Ui.Caption("Vuelve a pulsar REC para cancelar");
+            var hint = Ui.Caption("Sonido: " + RecordSoundLabel + "\nVuelve a pulsar REC para cancelar");
             hint.TextAlignment = TextAlignment.Center;
             body.Children.Add(hint);
             var card = Ui.Card(body, 20, 14);
@@ -391,7 +561,7 @@ namespace Pizarra
                 Directory.CreateDirectory(System.IO.Path.GetDirectoryName(file));
                 ExcludeBarFromVideo(true);
                 var b = System.Windows.Forms.Screen.AllScreens[Math.Min(MonitorIndex, MonitorCount - 1)].Bounds;
-                var r = new ScreenRecorder(file, b);
+                var r = new ScreenRecorder(file, b, RecordMic, RecordSystem);
                 r.Start();
                 problem = r.Error;
                 if (problem == null) recorder = r;
@@ -412,6 +582,7 @@ namespace Pizarra
             }
             recTimer.Start();
             Bar.UpdateRec();
+            if (recorder.Notes.Length > 0) Toast(recorder.Notes);
             return true;
         }
 
@@ -441,7 +612,7 @@ namespace Pizarra
             ExcludeBarFromVideo(false);
             Bar.UpdateRec();
             if (r.Error != null) return null;
-            return new SavedVideo(r.FilePath, r.Elapsed);
+            return new SavedVideo(r.FilePath, r.Elapsed, r.HasAudio, r.Notes);
         }
 
         void ShowRecordingError(Exception ex)
@@ -464,6 +635,8 @@ namespace Pizarra
     {
         public readonly string Path;
         public readonly TimeSpan Time;
-        public SavedVideo(string path, TimeSpan time) { Path = path; Time = time; }
+        public readonly bool HasAudio;
+        public readonly string Notes;
+        public SavedVideo(string path, TimeSpan time, bool hasAudio, string notes) { Path = path; Time = time; HasAudio = hasAudio; Notes = notes; }
     }
 }

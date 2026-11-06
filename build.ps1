@@ -44,6 +44,7 @@ foreach ($d in $Define) { $args += "/define:$d" }
 $args += "$PSScriptRoot\Pizarra.cs"
 $args += "$PSScriptRoot\Pro.cs"
 $args += "$PSScriptRoot\Video.cs"
+$args += "$PSScriptRoot\Audio.cs"
 $args += $Extra
 & "$fw\csc.exe" @args
 if ($LASTEXITCODE -ne 0) { throw "Error de compilacion" }

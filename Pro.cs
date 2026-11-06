@@ -215,6 +215,7 @@ namespace Pizarra
             Ink.PreviewMouseMove += delegate(object s, MouseEventArgs e) { if (chromeFaded && e.LeftButton == MouseButtonState.Released) SetChromeFaded(false); };
             Closed += delegate { thumbTimer.Stop(); presentTimer.Stop(); replayTimer.Stop(); EndRecording(); };
             LoadPresets();
+            LoadRecordSound();
         }
 
         bool IsDrawingTool

@@ -371,6 +371,94 @@ namespace Pizarra
                 Check("región fuera de la imagen no hace nada", c.Sheets.Count == sheetsBefore);
             }
 
+            // --- Audio ---
+            var st = new float[4];
+            AudioMath.Decode(BitConverter.GetBytes(0.5f).Concat(BitConverter.GetBytes(-0.25f)).Concat(BitConverter.GetBytes(0.1f)).Concat(BitConverter.GetBytes(0.9f)).ToArray(), 2, 2, 4, true, st);
+            Check("audio: decodifica coma flotante", st[0] == 0.5f && st[1] == -0.25f && st[3] == 0.9f);
+            AudioMath.Decode(BitConverter.GetBytes((short)16384), 1, 1, 2, false, st);
+            Check("audio: mono de 16 bits a estéreo", st[0] == 0.5f && st[1] == 0.5f);
+            AudioMath.Decode(new byte[] { 0, 0, 64, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9 }, 1, 6, 3, false, st);
+            Check("audio: 24 bits de varios canales", Math.Abs(st[0] - 0.5f) < 0.001f);
+            Check("audio: recorta sin desbordar", AudioMath.ToPcm16(2f) == 32767 && AudioMath.ToPcm16(-2f) == -32767 && AudioMath.ToPcm16(0f) == 0);
+            // Remuestreo por paquetes: la duración se conserva y no hay saltos entre paquetes
+            var rs = new Resampler(44100);
+            var outBuf = new float[0];
+            var sine = new List<float>();
+            for (int packet = 0; packet < 100; packet++)
+            {
+                var block = new float[441 * 2];
+                for (int i = 0; i < 441; i++)
+                    block[i * 2] = block[i * 2 + 1] = (float)Math.Sin(2 * Math.PI * 440 * (packet * 441 + i) / 44100.0);
+                int made = rs.Process(block, 441, ref outBuf);
+                for (int i = 0; i < made; i++) sine.Add(outBuf[i * 2]);
+            }
+            Check("audio: 44,1 kHz dura lo mismo a 48 kHz", Math.Abs(sine.Count - 48000) < 3);
+            double maxJump = 0;
+            for (int i = 1; i < sine.Count; i++) maxJump = Math.Max(maxJump, Math.Abs(sine[i] - sine[i - 1]));
+            Check("audio: sin chasquidos entre paquetes", maxJump < 2 * Math.PI * 440 / 48000 * 1.1);
+            var same = new Resampler(48000);
+            var sameOut = new float[0];
+            int total48 = same.Process(new float[] { 1, 1, 2, 2, 3, 3 }, 3, ref sameOut);
+            total48 += same.Process(new float[] { 4, 4, 5, 5 }, 2, ref sameOut);
+            Check("audio: 48 kHz no cambia de duración", total48 == 4 && sameOut[0] == 3 && sameOut[2] == 4);
+            // Línea de tiempo
+            var track = new AudioTrack();
+            var one = new float[] { 1, 1, 1, 1 };
+            track.Put(0, one, 2);
+            track.Put(4800, one, 2);
+            var mixed = new float[4802 * 2];
+            track.MixInto(0, 4802, mixed);
+            Check("audio: un silencio conserva su duración", mixed[0] == 1 && mixed[2] == 1 && mixed[4] == 0 && mixed[4799 * 2] == 0 && mixed[4800 * 2] == 1 && mixed[4801 * 2] == 1);
+            var late = new AudioTrack();
+            late.Put(0, new float[20000], 10000);
+            late.Put(100, one, 2);
+            Check("audio: paquete muy atrasado se descarta", late.End == 10000);
+            late.Put(9990, one, 2);
+            Check("audio: pequeño desfase queda contiguo", late.End == 10002);
+            var t2 = new AudioTrack();
+            t2.Put(100000, one, 2);
+            var far = new float[2 * 2];
+            t2.MixInto(50, 2, far);
+            Check("audio: leer antes de que llegue da silencio", far[0] == 0);
+            var t3 = new AudioTrack();
+            // Diez minutos de paquetes de 10 ms, leídos con 150 ms de margen como en la grabación
+            var packet480 = new float[960];
+            for (int i = 0; i < 960; i++) packet480[i] = 0.5f;
+            var read = new float[960];
+            long readAt = 0;
+            double sum = 0;
+            for (int k = 0; k < 60000; k++)
+            {
+                t3.Put(k * 480L, packet480, 480);
+                if (k * 480L - 7200 >= readAt)
+                {
+                    Array.Clear(read, 0, 960);
+                    t3.MixInto(readAt, 480, read);
+                    sum += read[0];
+                    readAt += 480;
+                }
+            }
+            Check("audio: la pista no crece sin límite", t3.Capacity <= 96000 && t3.End == 60000 * 480L);
+            Check("audio: lectura continua sin huecos", Math.Abs(sum - 0.5 * (readAt / 480)) < 0.001);
+
+            // --- Vídeo con sonido (micrófono y equipo; el archivo se borra enseguida) ---
+            string clipA = System.IO.Path.Combine(dir, "prueba-audio.mp4");
+            var recA = new ScreenRecorder(clipA, new System.Drawing.Rectangle(0, 0, 320, 240), true, true);
+            recA.Start();
+            System.Threading.Thread.Sleep(1500);
+            recA.Stop();
+            log.WriteLine("INFO audio: HasAudio=" + recA.HasAudio + " avisos=[" + recA.Notes + "]");
+            Check("vídeo con sonido: sin error", recA.Error == null);
+            Check("vídeo con sonido: archivo MP4", File.ReadAllBytes(clipA).Length > 500);
+            File.Delete(clipA);
+            c.SetRecordSound(false, true);
+            Check("sonido: etiqueta", c.RecordSoundLabel == "Solo audio del equipo");
+            c.SetRecordSound(false, false);
+            Check("sonido: sin sonido", c.RecordSoundLabel == "Sin sonido");
+            c.SetRecordSound(true, true);
+            c.Bar.ShowRecMenu();
+            ShotPopup(c, "ui-menu-sonido.png");
+
             // --- Vídeo ---
             Check("vídeo: medidas pares", ScreenRecorder.OutputSize(1921, 1081) == new Size(1920, 1080));
             Check("vídeo: limita a 4K", ScreenRecorder.OutputSize(5120, 1440) == new Size(3840, 1080));

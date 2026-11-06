@@ -3472,6 +3472,7 @@ namespace Pizarra
             recBtn = new Button { Style = Ui.ButtonStyle, Content = recContent, Width = 58, ToolTip = "Grabar la pantalla en vídeo MP4 (Ctrl+Alt+R)" };
             recBtn.Click += delegate { c.ToggleRecording(); };
             row1.Children.Add(recBtn);
+            row1.Children.Add(Ui.Chevron("Sonido de la grabación", ShowRecMenu));
             row1.Children.Add(Ui.Separator());
             row1.Children.Add(Ui.Glyph("", "Compactar la barra", delegate { SetCompact(true); }));
             row1.Children.Add(Ui.Glyph("", "Minimizar", delegate { c.WindowState = WindowState.Minimized; }));
@@ -3619,7 +3620,7 @@ namespace Pizarra
             var t = c.RecordingTime;
             recLabel.Text = c.Recording ? ((int)t.TotalMinutes).ToString("00") + ":" + t.Seconds.ToString("00") : c.CountingDown ? "…" : "REC";
             recLabel.Foreground = active ? new SolidColorBrush(RecRed) : new SolidColorBrush(Ui.Text);
-            recBtn.ToolTip = c.Recording ? "Parar la grabación (Ctrl+Alt+R)" : c.CountingDown ? "Cancelar" : "Grabar la pantalla en vídeo MP4 (Ctrl+Alt+R)";
+            recBtn.ToolTip = c.Recording ? "Parar la grabación (Ctrl+Alt+R)" : c.CountingDown ? "Cancelar" : "Grabar la pantalla en vídeo MP4 (Ctrl+Alt+R). Sonido: " + c.RecordSoundLabel;
             miniRec.Tag = active ? "on" : null;
             if (c.Recording && Ui.Motion && !recDot.HasAnimatedProperties)
                 recDot.BeginAnimation(UIElement.OpacityProperty, new DoubleAnimation(1, 0.2, TimeSpan.FromMilliseconds(600)) { AutoReverse = true, RepeatBehavior = RepeatBehavior.Forever });
@@ -3630,11 +3631,32 @@ namespace Pizarra
             }
         }
 
-        internal void ShowVideoSaved(string path, TimeSpan time)
+        internal void ShowRecMenu()
         {
             OpenList(recBtn, (panel, close) =>
             {
-                panel.Children.Add(Ui.Caption("Vídeo guardado (" + ((int)time.TotalMinutes).ToString("00") + ":" + time.Seconds.ToString("00") + ")\n" + System.IO.Path.GetFileName(path)));
+                panel.Children.Add(Ui.Caption("Sonido de la grabación"));
+                panel.Children.Add(Ui.MenuItem("Micrófono", c.RecordMic, delegate { close(); c.SetRecordSound(!c.RecordMic, c.RecordSystem); }));
+                panel.Children.Add(Ui.MenuItem("Audio del equipo", c.RecordSystem, delegate { close(); c.SetRecordSound(c.RecordMic, !c.RecordSystem); }));
+                panel.Children.Add(Ui.Caption(c.Recording ? "Se aplica a la próxima grabación." : "Se usan los dispositivos\npredeterminados de Windows."));
+            });
+        }
+
+        internal void ShowVideoSaved(SavedVideo video)
+        {
+            string path = video.Path;
+            var time = video.Time;
+            OpenList(recBtn, (panel, close) =>
+            {
+                panel.Children.Add(Ui.Caption("Vídeo guardado (" + ((int)time.TotalMinutes).ToString("00") + ":" + time.Seconds.ToString("00") + (video.HasAudio ? ", con sonido" : ", sin sonido") + ")\n" + System.IO.Path.GetFileName(path)));
+                if (video.Notes.Length > 0)
+                {
+                    var warning = Ui.Caption(video.Notes);
+                    warning.Foreground = new SolidColorBrush(RecRed);
+                    warning.TextWrapping = TextWrapping.Wrap;
+                    warning.MaxWidth = 300;
+                    panel.Children.Add(warning);
+                }
                 panel.Children.Add(Ui.MenuItem("Reproducir", true, delegate { close(); System.Diagnostics.Process.Start(path); }));
                 panel.Children.Add(Ui.MenuItem("Abrir la carpeta", false, delegate { close(); System.Diagnostics.Process.Start("explorer.exe", "/select,\"" + path + "\""); }));
             });
