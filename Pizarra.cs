@@ -9,6 +9,7 @@ using System.Linq;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Threading;
+using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
@@ -23,14 +24,17 @@ using System.Windows.Media.Effects;
 using System.Windows.Media.Imaging;
 using System.Windows.Shapes;
 using System.Windows.Threading;
+using WinInk = global::Windows.UI.Input.Inking;
 
 namespace Pizarra
 {
     enum Tool { Cursor, Pen, Highlighter, Eraser, StrokeEraser, Text, Sticky, Select, Shape, Hand, Laser, Spotlight, Magnifier, Eyedropper }
-    enum PenKind { Boligrafo, Lapiz, Rotulador, Pincel, Caligrafia, Neon, Discontinuo, Punteado, Aerosol, Arcoiris, Desvanecer }
+    enum PenKind { Boligrafo, Lapiz, Rotulador, Pincel, Neon, Discontinuo, Punteado, Aerosol, Arcoiris, Desvanecer, Caligrafia, Gotica, Inglesa, Estilografica, Firma, Cepillo }
+    // Cómo se interpreta el trazo: a mano alzada o punto a punto.
+    enum TraceMode { Libre, Suavizado, Recto, Ortogonal, Geometria, Letras, Polilinea, PoliOrtogonal, Curva }
     enum ShapeKind { Line, Arrow, DoubleArrow, Rect, RoundRect, Ellipse, Triangle, RightTriangle, Diamond, Pentagon, Hexagon, Star, Axes }
     // Los valores se guardan en los cuadernos: añadir siempre al final.
-    enum Paper { Blanca, Cuadriculada, Rayada, Puntos, Negra, Verde, Milimetrada, Pentagrama, Isometrica }
+    enum Paper { Blanca, Cuadriculada, Rayada, Puntos, Negra, Verde, Milimetrada, Pentagrama, Isometrica, Pauta }
     enum ItemKind { Text, Sticky, Doc, Image }
     enum StrokeStyle { Plain = 0, Neon = 1, Dashed = 2, Dotted = 3, Spray = 4, Rainbow = 5 }
     enum GuideKind { Ruler, Protractor }
@@ -224,6 +228,71 @@ namespace Pizarra
             }
         }
 
+        public static List<Point> Corners(List<Point> pts, double eps)
+        {
+            var keep = new SortedSet<int> { 0, pts.Count - 1 };
+            Simplify(pts, 0, pts.Count - 1, eps, keep);
+            return keep.Select(i => pts[i]).ToList();
+        }
+
+        // Ajusta líneas casi horizontales, verticales o a 45 grados.
+        static Point SnapAngle(Point a, Point b)
+        {
+            double ang = Math.Atan2(b.Y - a.Y, b.X - a.X), step = Math.PI / 4, near = Math.Round(ang / step) * step;
+            if (Math.Abs(ang - near) > 5 * Math.PI / 180) return b;
+            double len = Dist(a, b);
+            return new Point(a.X + len * Math.Cos(near), a.Y + len * Math.Sin(near));
+        }
+
+        // Quita vértices falsos: los que apenas cambian de dirección o están pegados a otro.
+        static List<Point> Clean(List<Point> ring, double minSide)
+        {
+            var c = new List<Point>(ring);
+            bool changed = true;
+            while (changed && c.Count > 3)
+            {
+                changed = false;
+                for (int i = 0; i < c.Count; i++)
+                {
+                    Point prev = c[(i + c.Count - 1) % c.Count], cur = c[i], next = c[(i + 1) % c.Count];
+                    Vector u = cur - prev, v = next - cur;
+                    bool flat = u.Length > 0 && v.Length > 0 && Math.Abs(Vector.AngleBetween(u, v)) < 25;
+                    if (flat || Dist(prev, cur) < minSide)
+                    {
+                        c.RemoveAt(i);
+                        changed = true;
+                        break;
+                    }
+                }
+            }
+            return c;
+        }
+
+        static int SelfCrossings(List<Point> ring)
+        {
+            int n = ring.Count, total = 0;
+            for (int i = 0; i < n; i++)
+                for (int j = i + 2; j < n; j++)
+                {
+                    if (i == 0 && j == n - 1) continue;
+                    if (Cross(ring[i], ring[(i + 1) % n], ring[j], ring[(j + 1) % n])) total++;
+                }
+            return total;
+        }
+
+        static bool Cross(Point a, Point b, Point c, Point d)
+        {
+            Func<Point, Point, Point, double> o = (p, q, r) => (q.X - p.X) * (r.Y - p.Y) - (q.Y - p.Y) * (r.X - p.X);
+            return o(a, b, c) * o(a, b, d) < 0 && o(c, d, a) * o(c, d, b) < 0;
+        }
+
+        static List<Point> Close(List<Point> ring)
+        {
+            var t = new List<Point>(ring);
+            t.Add(ring[0]);
+            return t;
+        }
+
         public static List<Point> Recognize(IEnumerable<Point> input)
         {
             var pts = input.ToList();
@@ -233,28 +302,181 @@ namespace Pizarra
             if (diag < 25) return null;
             double len = 0;
             for (int i = 1; i < pts.Count; i++) len += Dist(pts[i - 1], pts[i]);
-            Point a = pts[0], b = pts[pts.Count - 1];
+            Point a = pts[0], b = pts[pts.Count - 1], tl = new Point(minX, minY), br = new Point(maxX, maxY);
             if (Dist(a, b) > 0.22 * len)
             {
-                // Abierto: solo se acepta si es casi recto.
-                return pts.Max(p => DistToSegment(p, a, b)) < 0.05 * Dist(a, b) ? new List<Point> { a, b } : null;
+                if (pts.Max(p => DistToSegment(p, a, b)) < 0.05 * Dist(a, b)) return new List<Point> { a, SnapAngle(a, b) };
+                var open = Corners(pts, 0.05 * diag);
+                // Flecha de un solo trazo: línea, punta, ala, punta, ala.
+                if (open.Count == 5 && Dist(open[1], open[3]) < 0.12 * diag && Dist(open[0], open[1]) > 2 * Dist(open[1], open[2]))
+                    return Shapes.Polygon(ShapeKind.Arrow, open[0], open[1], 4);
+                // Poligonal abierta con pocos vértices: se limpia si se ajusta bien al dibujo.
+                if (open.Count <= 6 && len > 2.2 * open.Count * 0.05 * diag)
+                {
+                    var straight = new List<Point> { open[0] };
+                    for (int i = 1; i < open.Count; i++) straight.Add(SnapAngle(straight[i - 1], open[i]));
+                    return straight;
+                }
+                return null;
             }
             double cx = (minX + maxX) / 2, cy = (minY + maxY) / 2, rx = Math.Max(1, (maxX - minX) / 2), ry = Math.Max(1, (maxY - minY) / 2);
             var radii = pts.Select(p => Math.Sqrt((p.X - cx) * (p.X - cx) / (rx * rx) + (p.Y - cy) * (p.Y - cy) / (ry * ry))).ToList();
             double mean = radii.Average(), dev = Math.Sqrt(radii.Sum(r => (r - mean) * (r - mean)) / radii.Count);
-            if (dev < 0.085) return Shapes.Polygon(ShapeKind.Ellipse, new Point(minX, minY), new Point(maxX, maxY), 0);
-            var keep = new SortedSet<int> { 0, pts.Count - 1 };
-            Simplify(pts, 0, pts.Count - 1, 0.07 * diag, keep);
-            var corners = keep.Select(i => pts[i]).ToList();
+            if (dev < 0.085) return Shapes.Polygon(ShapeKind.Ellipse, tl, br, 0);
+            var corners = Corners(pts, 0.07 * diag);
             // El punto final casi coincide con el inicial.
             corners.RemoveAt(corners.Count - 1);
-            if (corners.Count == 3)
+            corners = Clean(corners, 0.08 * diag);
+            if (corners.Count == 3) return Close(corners);
+            if (corners.Count == 5 && SelfCrossings(corners) >= 3) return Shapes.Polygon(ShapeKind.Star, tl, br, 0);
+            if (corners.Count == 4)
             {
-                var t = new List<Point>(corners); t.Add(corners[0]);
-                return t;
+                // Vértices en el centro de cada lado: rombo. En las esquinas: rectángulo.
+                double tol = 0.14 * diag;
+                bool diamond = corners.All(p => (Math.Abs(p.X - cx) < tol && (Math.Abs(p.Y - minY) < tol || Math.Abs(p.Y - maxY) < tol))
+                                             || (Math.Abs(p.Y - cy) < tol && (Math.Abs(p.X - minX) < tol || Math.Abs(p.X - maxX) < tol)));
+                if (diamond) return Shapes.Polygon(ShapeKind.Diamond, tl, br, 0);
+                bool box = corners.All(p => (Math.Abs(p.X - minX) < tol || Math.Abs(p.X - maxX) < tol) && (Math.Abs(p.Y - minY) < tol || Math.Abs(p.Y - maxY) < tol));
+                return box ? Shapes.Polygon(ShapeKind.Rect, tl, br, 0) : Close(corners);
             }
-            if (corners.Count == 4) return Shapes.Polygon(ShapeKind.Rect, new Point(minX, minY), new Point(maxX, maxY), 0);
+            if (corners.Count == 5 || corners.Count == 6)
+            {
+                // Si los lados son parecidos, se dibuja el polígono regular.
+                var sides = Enumerable.Range(0, corners.Count).Select(i => Dist(corners[i], corners[(i + 1) % corners.Count])).ToList();
+                double avg = sides.Average();
+                if (sides.All(s => Math.Abs(s - avg) < 0.3 * avg))
+                    return Shapes.Polygon(corners.Count == 5 ? ShapeKind.Pentagon : ShapeKind.Hexagon, tl, br, 0);
+                return Close(corners);
+            }
             return null;
+        }
+    }
+
+    // ---- Transformaciones de trazo: suavizado, ortogonal, curvas y efecto de plumilla ----
+    static class StrokeFx
+    {
+        public static List<Point> Smooth(List<Point> pts, int passes)
+        {
+            var cur = new List<Point>(pts);
+            for (int pass = 0; pass < passes; pass++)
+            {
+                var next = new List<Point>(cur);
+                for (int i = 1; i < cur.Count - 1; i++)
+                    next[i] = new Point((cur[i - 1].X + 2 * cur[i].X + cur[i + 1].X) / 4, (cur[i - 1].Y + 2 * cur[i].Y + cur[i + 1].Y) / 4);
+                cur = next;
+            }
+            return cur;
+        }
+
+        // Cada tramo se convierte en horizontal o vertical, según su dirección dominante.
+        public static List<Point> Orthogonal(List<Point> pts)
+        {
+            double w = pts.Max(p => p.X) - pts.Min(p => p.X), h = pts.Max(p => p.Y) - pts.Min(p => p.Y);
+            var corners = ShapeRecognizer.Corners(pts, Math.Max(6, 0.06 * Math.Sqrt(w * w + h * h)));
+            var result = new List<Point> { corners[0] };
+            for (int i = 1; i < corners.Count; i++)
+            {
+                Point prev = result[result.Count - 1], c = corners[i];
+                result.Add(Math.Abs(c.X - prev.X) >= Math.Abs(c.Y - prev.Y) ? new Point(c.X, prev.Y) : new Point(prev.X, c.Y));
+            }
+            return result;
+        }
+
+        // Curva que pasa por todos los puntos marcados (Catmull-Rom).
+        public static List<Point> Spline(List<Point> pts, int steps)
+        {
+            if (pts.Count < 3) return new List<Point>(pts);
+            var r = new List<Point>();
+            for (int i = 0; i < pts.Count - 1; i++)
+            {
+                Point p0 = pts[Math.Max(0, i - 1)], p1 = pts[i], p2 = pts[i + 1], p3 = pts[Math.Min(pts.Count - 1, i + 2)];
+                for (int k = 0; k < steps; k++)
+                {
+                    double t = (double)k / steps, t2 = t * t, t3 = t2 * t;
+                    r.Add(new Point(
+                        0.5 * (2 * p1.X + (p2.X - p0.X) * t + (2 * p0.X - 5 * p1.X + 4 * p2.X - p3.X) * t2 + (3 * p1.X - p0.X - 3 * p2.X + p3.X) * t3),
+                        0.5 * (2 * p1.Y + (p2.Y - p0.Y) * t + (2 * p0.Y - 5 * p1.Y + 4 * p2.Y - p3.Y) * t2 + (3 * p1.Y - p0.Y - 3 * p2.Y + p3.Y) * t3)));
+                }
+            }
+            r.Add(pts[pts.Count - 1]);
+            return r;
+        }
+
+        // El ratón no mide presión: el grosor se deduce del movimiento según la plumilla.
+        public static float[] Pressure(PenKind kind, List<Point> pts)
+        {
+            int n = pts.Count;
+            var raw = new double[n];
+            double maxStep = 1;
+            for (int i = 1; i < n; i++) maxStep = Math.Max(maxStep, (pts[i] - pts[i - 1]).Length);
+            for (int i = 0; i < n; i++)
+            {
+                Vector d = i > 0 ? pts[i] - pts[i - 1] : (n > 1 ? pts[1] - pts[0] : new Vector(0, 0));
+                double speed = d.Length / maxStep;
+                switch (kind)
+                {
+                    // Letra inglesa: bajadas gruesas y subidas finas.
+                    case PenKind.Inglesa: raw[i] = d.Length > 0 ? 0.1 + 0.8 * Math.Max(0, d.Y / d.Length) : 0.1; break;
+                    case PenKind.Estilografica: raw[i] = 0.75 - 0.5 * speed; break;
+                    case PenKind.Firma: raw[i] = 0.7 - 0.55 * speed; break;
+                    case PenKind.Cepillo: raw[i] = 0.9 - 0.65 * speed; break;
+                    default: raw[i] = 0.72; break;
+                }
+            }
+            // Transición gradual para evitar saltos de grosor.
+            var result = new float[n];
+            int win = Math.Min(6, n / 3);
+            bool taper = kind == PenKind.Pincel || kind == PenKind.Firma || kind == PenKind.Cepillo || kind == PenKind.Estilografica;
+            for (int i = 0; i < n; i++)
+            {
+                double sum = 0; int c = 0;
+                for (int k = Math.Max(0, i - win); k <= Math.Min(n - 1, i + win); k++) { sum += raw[k]; c++; }
+                double v = sum / c;
+                if (taper && n > 1) v *= 0.15 + 0.85 * Math.Pow(Math.Sin(Math.PI * i / (n - 1)), 0.6);
+                result[i] = (float)Math.Max(0.06, Math.Min(1, v));
+            }
+            return result;
+        }
+    }
+
+    // ---- Reconocedor de escritura a mano de Windows ----
+    static class Handwriting
+    {
+        public static bool Available
+        {
+            get
+            {
+                try { return new WinInk.InkRecognizerContainer().GetRecognizers().Count > 0; }
+                catch (Exception) { return false; }
+            }
+        }
+
+        // Devuelve las palabras detectadas; cada una con sus candidatas, de mejor a peor.
+        public static async Task<List<List<string>>> RecognizeAsync(List<List<Point>> strokes)
+        {
+            var manager = new WinInk.InkManager();
+            var builder = new WinInk.InkStrokeBuilder();
+            foreach (var s in strokes)
+            {
+                var pts = s.Select(p => new global::Windows.Foundation.Point(p.X, p.Y)).ToList();
+                if (pts.Count == 1) pts.Add(new global::Windows.Foundation.Point(pts[0].X + 1, pts[0].Y + 1));
+                manager.AddStroke(builder.CreateStroke(pts));
+            }
+            foreach (var r in manager.GetRecognizers())
+                if (r.Name.IndexOf("espa", StringComparison.OrdinalIgnoreCase) >= 0) { manager.SetDefaultRecognizer(r); break; }
+            var done = new TaskCompletionSource<List<List<string>>>();
+            var operation = manager.RecognizeAsync(WinInk.InkRecognitionTarget.All);
+            operation.Completed = (op, status) =>
+            {
+                try
+                {
+                    if (status == global::Windows.Foundation.AsyncStatus.Completed)
+                        done.SetResult(op.GetResults().Select(r => r.GetTextCandidates().ToList()).ToList());
+                    else done.SetException(new InvalidOperationException("El reconocedor terminó con estado " + status));
+                }
+                catch (Exception ex) { done.TrySetException(ex); }
+            };
+            return await done.Task;
         }
     }
 
@@ -680,7 +902,10 @@ namespace Pizarra
         internal Tool Tool = Tool.Pen;
         internal PenKind Pen = PenKind.Boligrafo;
         internal ShapeKind ShapeType = ShapeKind.Rect;
-        internal bool FillShapes, RecognizeShapes;
+        internal bool FillShapes, SnapGrid, ReviewLetters = true;
+        internal TraceMode Trace = TraceMode.Libre;
+        internal double NibAngle = 35;
+        internal int SmoothLevel = 3;
         internal Color InkColor = Color.FromRgb(0x20, 0x20, 0x20);
         internal Color StickyColor = Color.FromRgb(0xFF, 0xF1, 0x76);
         internal double InkOpacity = 1;
@@ -692,7 +917,14 @@ namespace Pizarra
         internal MathGuide Ruler, Protractor;
 
         readonly Grid root;
-        readonly Canvas inkHost, guideLayer, effectLayer;
+        readonly Canvas inkHost, guideLayer, effectLayer, panelLayer;
+        readonly DispatcherTimer letterTimer;
+        readonly StrokeCollection pendingLetters = new StrokeCollection();
+        List<Point> polyPts;
+        Stroke polyStroke;
+        Border correctionPanel;
+        TextBox correctionBox;
+        StrokeCollection correctionStrokes;
         readonly StackPanel pill;
         readonly TextBlock pageLabel, zoomLabel;
         readonly Button prevBtn, nextBtn, paperBtn, sheetMenuBtn;
@@ -765,6 +997,10 @@ namespace Pizarra
             root.Children.Add(Host);
             root.Children.Add(guideLayer);
             root.Children.Add(effectLayer);
+            panelLayer = new Canvas();
+            root.Children.Add(panelLayer);
+            letterTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(1300) };
+            letterTimer.Tick += delegate { letterTimer.Stop(); ConvertPendingLetters(); };
             root.Children.Add(new Border
             {
                 Child = pill,
@@ -898,6 +1134,23 @@ namespace Pizarra
             SetTool(Tool.Pen);
         }
 
+        internal void SetTrace(TraceMode m)
+        {
+            FinishText();
+            Trace = m;
+            SetTool(Tool.Pen);
+        }
+
+        internal bool IsClickTrace
+        {
+            get { return Trace == TraceMode.Polilinea || Trace == TraceMode.PoliOrtogonal || Trace == TraceMode.Curva; }
+        }
+
+        static bool IsCalligraphic(PenKind k)
+        {
+            return k == PenKind.Caligrafia || k == PenKind.Gotica || k == PenKind.Inglesa || k == PenKind.Estilografica || k == PenKind.Firma || k == PenKind.Cepillo;
+        }
+
         internal void SetShape(ShapeKind k)
         {
             ShapeType = k;
@@ -939,11 +1192,26 @@ namespace Pizarra
                     da.Width = da.Height = PenSize * 3;
                     break;
                 case PenKind.Caligrafia:
+                case PenKind.Gotica:
+                    // Plumilla plana: el grosor depende de la dirección del trazo.
+                    bool gothic = Pen == PenKind.Gotica;
                     da.StylusTip = StylusTip.Rectangle;
-                    da.Width = Math.Max(1, PenSize * 0.4);
-                    da.Height = PenSize * 2.6;
-                    da.StylusTipTransform = new RotateTransform(35).Value;
+                    da.Width = Math.Max(1, PenSize * (gothic ? 0.3 : 0.4));
+                    da.Height = PenSize * (gothic ? 4.2 : 2.8);
+                    da.StylusTipTransform = new RotateTransform(NibAngle).Value;
                     da.IgnorePressure = true;
+                    break;
+                case PenKind.Inglesa:
+                    da.Width = da.Height = PenSize * 2.4;
+                    break;
+                case PenKind.Estilografica:
+                    da.Width = da.Height = PenSize * 1.7;
+                    break;
+                case PenKind.Firma:
+                    da.Width = da.Height = PenSize * 1.5;
+                    break;
+                case PenKind.Cepillo:
+                    da.Width = da.Height = PenSize * 3.4;
                     break;
                 case PenKind.Boligrafo:
                 case PenKind.Desvanecer:
@@ -985,6 +1253,13 @@ namespace Pizarra
             switch (Tool)
             {
                 case Tool.Pen:
+                    if (IsClickTrace)
+                    {
+                        Ink.UseCustomCursor = true;
+                        Ink.Cursor = Cursors.Cross;
+                    }
+                    else Ink.EditingMode = InkCanvasEditingMode.Ink;
+                    break;
                 case Tool.Highlighter:
                 case Tool.Laser:
                     Ink.EditingMode = InkCanvasEditingMode.Ink;
@@ -1192,6 +1467,7 @@ namespace Pizarra
             if (p == Paper.Milimetrada) w = h = 50;
             if (p == Paper.Pentagrama) { w = 40; h = 150; }
             if (p == Paper.Isometrica) { w = 34.64; h = 40; }
+            if (p == Paper.Pauta) { w = 120; h = 96; }
             var line = new Pen(new SolidColorBrush(Color.FromRgb(0xC5, 0xD3, 0xE6)), 1);
             var fine = new Pen(new SolidColorBrush(Color.FromRgb(0xE3, 0xEA, 0xF3)), 0.6);
             var dark = new Pen(new SolidColorBrush(Color.FromRgb(0x77, 0x77, 0x77)), 1);
@@ -1217,6 +1493,11 @@ namespace Pizarra
                     break;
                 case Paper.Pentagrama:
                     group.Children.Add(new GeometryDrawing(null, dark, Geometry.Parse("M0,40 H40 M0,52 H40 M0,64 H40 M0,76 H40 M0,88 H40")));
+                    break;
+                case Paper.Pauta:
+                    // Pauta de caligrafía: línea base y altura de la x marcadas, con guías inclinadas.
+                    group.Children.Add(new GeometryDrawing(null, line, Geometry.Parse("M0,30 H120 M0,66 H120")));
+                    group.Children.Add(new GeometryDrawing(null, fine, Geometry.Parse("M0,12 H120 M0,84 H120 M12,96 L44,0 M72,96 L104,0")));
                     break;
                 case Paper.Isometrica:
                     group.Children.Add(new GeometryDrawing(null, line, Geometry.Parse(string.Format(inv, "M0,0 V{1} M{0},0 V{1} M0,0 L{0},20 M0,20 L{0},40 M0,20 L{0},0 M0,40 L{0},20", w, h))));
@@ -1249,7 +1530,7 @@ namespace Pizarra
         {
             var panel = new StackPanel();
             Popup pop = null;
-            string[] names = { "Blanca", "Cuadriculada", "Rayada", "Puntos", "Negra", "Verde de pizarra", "Milimetrada", "Pentagrama", "Isométrica" };
+            string[] names = { "Blanca", "Cuadriculada", "Rayada", "Puntos", "Negra", "Verde de pizarra", "Milimetrada", "Pentagrama", "Isométrica", "Pauta de caligrafía" };
             foreach (Paper p in Enum.GetValues(typeof(Paper)))
             {
                 var pp = p;
@@ -1589,11 +1870,11 @@ namespace Pizarra
         }
 
         // ---- Texto, notas e imágenes ----
-        internal static byte[] PlainXaml(string text, double size, Color color, bool bold)
+        internal static byte[] PlainXaml(string text, double size, Color color, bool bold, string font = "Segoe UI")
         {
             var doc = new FlowDocument(new Paragraph(new Run(text)) { Margin = new Thickness(0) })
             {
-                FontFamily = new FontFamily("Segoe UI"),
+                FontFamily = new FontFamily(font),
                 FontSize = size,
                 Foreground = new SolidColorBrush(color),
                 FontWeight = bold ? FontWeights.SemiBold : FontWeights.Normal
@@ -1701,8 +1982,10 @@ namespace Pizarra
                 doc.Foreground = new SolidColorBrush(t.Kind == ItemKind.Sticky ? Color.FromRgb(0x20, 0x20, 0x20) : InkColor);
             }
             rt.TextChanged += delegate { if (!loading) dirty = true; };
-            rt.GotKeyboardFocus += delegate { activeText = rt; };
-            rt.LostKeyboardFocus += OnTextLostFocus;
+            // Revisión ortográfica solo al editar: así no aparece subrayado rojo en las exportaciones.
+            rt.Language = XmlLanguage.GetLanguage("es-ES");
+            rt.GotKeyboardFocus += delegate { activeText = rt; rt.SpellCheck.IsEnabled = true; };
+            rt.LostKeyboardFocus += delegate(object s, KeyboardFocusChangedEventArgs e) { rt.SpellCheck.IsEnabled = false; OnTextLostFocus(s, e); };
             return rt;
         }
 
@@ -1737,7 +2020,322 @@ namespace Pizarra
 
         void FinishText()
         {
+            if (PolyActive) PolyFinish();
             if (activeText != null) Ink.Focus();
+        }
+
+        // ---- Polilínea, polilínea ortogonal y curva: se dibujan clic a clic ----
+        internal bool PolyActive { get { return polyPts != null; } }
+
+        double GridStep
+        {
+            get
+            {
+                switch (Cur.Paper)
+                {
+                    case Paper.Cuadriculada: case Paper.Puntos: return 30;
+                    case Paper.Rayada: return 38;
+                    case Paper.Milimetrada: return 10;
+                    default: return 20;
+                }
+            }
+        }
+
+        internal Point SnapPoint(Point p)
+        {
+            if (!SnapGrid) return p;
+            double s = GridStep, off = Cur.Paper == Paper.Puntos ? 15 : 0;
+            return new Point(Math.Round((p.X - off) / s) * s + off, Math.Round((p.Y - off) / s) * s + off);
+        }
+
+        Point Constrain(Point raw, bool shift)
+        {
+            Point p = SnapPoint(raw);
+            if (polyPts == null || polyPts.Count == 0) return p;
+            Point last = polyPts[polyPts.Count - 1];
+            if (Trace == TraceMode.PoliOrtogonal)
+                return Math.Abs(p.X - last.X) >= Math.Abs(p.Y - last.Y) ? new Point(p.X, last.Y) : new Point(last.X, p.Y);
+            if (shift)
+            {
+                double ang = Math.Round(Math.Atan2(p.Y - last.Y, p.X - last.X) / (Math.PI / 4)) * Math.PI / 4, len = (p - last).Length;
+                return new Point(last.X + len * Math.Cos(ang), last.Y + len * Math.Sin(ang));
+            }
+            return p;
+        }
+
+        void ShowPoly(List<Point> vertices)
+        {
+            var pts = new StylusPointCollection(Trace == TraceMode.Curva ? StrokeFx.Spline(vertices, 14) : vertices);
+            suspend = true;
+            if (polyStroke == null)
+            {
+                var da = PenAttributes();
+                da.FitToCurve = false;
+                da.IgnorePressure = true;
+                polyStroke = RichStroke.NeedsRich(da) ? new RichStroke(pts, da) : new Stroke(pts, da);
+                Ink.Strokes.Add(polyStroke);
+            }
+            else polyStroke.StylusPoints = pts;
+            suspend = false;
+        }
+
+        internal void PolyClick(Point raw, bool shift, int clicks)
+        {
+            if (clicks >= 2 && PolyActive) { PolyFinish(); return; }
+            Point p = Constrain(raw, shift);
+            if (polyPts == null) polyPts = new List<Point>();
+            else if (polyPts.Count >= 2 && Trace != TraceMode.Curva && (p - polyPts[0]).Length < 10 / Cur.Zoom)
+            {
+                // Clic junto al inicio: cierra la figura.
+                polyPts.Add(polyPts[0]);
+                PolyFinish();
+                return;
+            }
+            polyPts.Add(p);
+            ShowPoly(polyPts);
+        }
+
+        internal void PolyMove(Point raw, bool shift)
+        {
+            if (!PolyActive) return;
+            var v = new List<Point>(polyPts);
+            v.Add(Constrain(raw, shift));
+            ShowPoly(v);
+        }
+
+        internal void PolyBack(Point cursor)
+        {
+            if (!PolyActive) return;
+            polyPts.RemoveAt(polyPts.Count - 1);
+            if (polyPts.Count == 0) PolyCancel();
+            else PolyMove(cursor, false);
+        }
+
+        internal void PolyCancel()
+        {
+            if (polyStroke != null)
+            {
+                suspend = true;
+                Ink.Strokes.Remove(polyStroke);
+                suspend = false;
+            }
+            polyStroke = null;
+            polyPts = null;
+        }
+
+        internal void PolyFinish()
+        {
+            if (polyPts == null) return;
+            if (polyPts.Count < 2) { PolyCancel(); return; }
+            ShowPoly(polyPts); // quita el tramo elástico que seguía al ratón
+            polyStroke = null;
+            polyPts = null;
+            dirty = true;
+            Commit();
+        }
+
+        // ---- De letras a mano a texto, con corrección antes de aceptar ----
+        void ConvertPendingLetters()
+        {
+            var alive = new StrokeCollection(pendingLetters.Where(s => Ink.Strokes.Contains(s)));
+            pendingLetters.Clear();
+            if (alive.Count > 0) StartRecognition(alive);
+        }
+
+        internal async void StartRecognition(StrokeCollection strokes)
+        {
+            var words = await RecognizeWords(strokes);
+            if (words == null) return;
+            if (words.Count == 0) return;
+            if (ReviewLetters) ShowCorrection(strokes, words);
+            else ApplyRecognized(strokes, string.Join(" ", words.Select(w => w[0])));
+        }
+
+        internal async Task<List<List<string>>> RecognizeWords(StrokeCollection strokes)
+        {
+            if (!Handwriting.Available)
+            {
+                MessageBox.Show(this, "Windows no tiene un reconocedor de escritura instalado.\n\nInstálalo en Configuración > Hora e idioma > Idioma y región > Español > Opciones de idioma > Escritura a mano.", "Pizarra", MessageBoxButton.OK, MessageBoxImage.Information);
+                return null;
+            }
+            try
+            {
+                var input = strokes.Select(s => s.StylusPoints.Select(p => (Point)p).ToList()).ToList();
+                return await Handwriting.RecognizeAsync(input);
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(this, "No se pudo reconocer la escritura:\n" + ex.Message, "Pizarra", MessageBoxButton.OK, MessageBoxImage.Error);
+                return null;
+            }
+        }
+
+        // Frases alternativas: cambia una palabra cada vez por otra candidata.
+        internal static List<string> Alternatives(List<List<string>> words)
+        {
+            var top = words.Select(w => w[0]).ToList();
+            var list = new List<string>();
+            for (int i = 0; i < words.Count; i++)
+                foreach (var cand in words[i].Skip(1).Take(4))
+                {
+                    var copy = new List<string>(top);
+                    copy[i] = cand;
+                    string phrase = string.Join(" ", copy);
+                    if (!list.Contains(phrase) && list.Count < 6) list.Add(phrase);
+                }
+            return list;
+        }
+
+        internal bool CorrectionOpen { get { return correctionPanel != null; } }
+
+        internal void ShowCorrection(StrokeCollection strokes, List<List<string>> words)
+        {
+            if (CorrectionOpen) AcceptCorrection();
+            correctionStrokes = strokes;
+            correctionBox = new TextBox
+            {
+                Text = string.Join(" ", words.Select(w => w[0])),
+                FontSize = 18,
+                MinWidth = 300,
+                Padding = new Thickness(4),
+                Language = XmlLanguage.GetLanguage("es-ES")
+            };
+            correctionBox.SpellCheck.IsEnabled = true;
+            var panel = new StackPanel();
+            panel.Children.Add(Ui.Caption("¿Es correcto? Edita el texto o elige otra opción (botón derecho: sugerencias)"));
+            panel.Children.Add(correctionBox);
+            var alts = new WrapPanel { MaxWidth = 460 };
+            foreach (var alt in Alternatives(words))
+            {
+                var a = alt;
+                alts.Children.Add(Ui.MenuItem(a, false, delegate { correctionBox.Text = a; correctionBox.Focus(); correctionBox.CaretIndex = a.Length; }));
+            }
+            panel.Children.Add(alts);
+            var actions = Ui.Row();
+            actions.Margin = new Thickness(0, 6, 0, 0);
+            actions.Children.Add(Ui.MenuItem("Aceptar (Enter)", true, AcceptCorrection));
+            actions.Children.Add(Ui.MenuItem("Dejar a mano (Esc)", false, CloseCorrection));
+            panel.Children.Add(actions);
+            correctionPanel = new Border
+            {
+                Child = panel,
+                Background = new SolidColorBrush(Ui.PanelColor),
+                CornerRadius = new CornerRadius(8),
+                Padding = new Thickness(8),
+                Effect = new DropShadowEffect { BlurRadius = 12, ShadowDepth = 2, Opacity = 0.4 }
+            };
+            panelLayer.Children.Add(correctionPanel);
+            correctionPanel.UpdateLayout();
+            Rect b = strokes.GetBounds();
+            double x = b.Left * Cur.Zoom + Cur.PanX, y = b.Bottom * Cur.Zoom + Cur.PanY + 10, panelW = correctionPanel.ActualWidth, panelH = correctionPanel.ActualHeight;
+            Canvas.SetLeft(correctionPanel, Math.Max(8, Math.Min(x, root.ActualWidth - panelW - 8)));
+            Canvas.SetTop(correctionPanel, y + panelH > root.ActualHeight - 8 ? Math.Max(8, b.Top * Cur.Zoom + Cur.PanY - panelH - 10) : y);
+            correctionBox.Focus();
+            Keyboard.Focus(correctionBox);
+            correctionBox.SelectAll();
+        }
+
+        internal void AcceptCorrection()
+        {
+            if (!CorrectionOpen) return;
+            var strokes = correctionStrokes;
+            string text = correctionBox.Text.Trim();
+            CloseCorrection();
+            if (text.Length > 0) ApplyRecognized(strokes, text);
+        }
+
+        internal void CloseCorrection()
+        {
+            if (!CorrectionOpen) return;
+            panelLayer.Children.Remove(correctionPanel);
+            correctionPanel = null;
+            correctionBox = null;
+            correctionStrokes = null;
+            Ink.Focus();
+        }
+
+        internal void SetCorrectionText(string s) { if (CorrectionOpen) correctionBox.Text = s; }
+
+        internal RichTextBox ApplyRecognized(StrokeCollection strokes, string text)
+        {
+            Rect b = strokes.GetBounds();
+            Color ink = strokes[0].DrawingAttributes.Color;
+            ink = Color.FromRgb(ink.R, ink.G, ink.B);
+            // El tamaño respeta el alto y el ancho de lo escrito, para no desbordar.
+            double size = Math.Max(12, Math.Min(96, Math.Min(b.Height * 0.8, 1.9 * b.Width / Math.Max(1, text.Length))));
+            var ft = new FormattedText(text, CultureInfo.CurrentCulture, FlowDirection.LeftToRight, new Typeface(FontName), size, Brushes.Black, VisualTreeHelper.GetDpi(this).PixelsPerDip);
+            foreach (var s in strokes.ToList())
+                if (Ink.Strokes.Contains(s)) Ink.Strokes.Remove(s);
+            var rt = (RichTextBox)AddElement(new Item { Kind = ItemKind.Text, X = b.Left, Y = b.Top, W = Math.Max(120, ft.WidthIncludingTrailingWhitespace + 30), Data = PlainXaml(text, size, ink, false, FontName) });
+            dirty = true;
+            Commit();
+            return rt;
+        }
+
+        StrokeCollection SelectedOrAll()
+        {
+            if (Ink.EditingMode == InkCanvasEditingMode.Select)
+            {
+                var sel = Ink.GetSelectedStrokes();
+                if (sel.Count > 0) return sel;
+            }
+            return Ink.Strokes;
+        }
+
+        internal void ConvertSelectionToText()
+        {
+            var strokes = new StrokeCollection(SelectedOrAll().Where(s => !fading.Any(f => f.S == s)));
+            Ink.EditingMode = InkCanvasEditingMode.None;
+            ApplyTool();
+            if (strokes.Count > 0) StartRecognition(strokes);
+        }
+
+        // Limpia trazos ya dibujados, seleccionados o de toda la hoja.
+        internal int ConvertSelectionToShapes()
+        {
+            var strokes = SelectedOrAll().ToList();
+            Ink.EditingMode = InkCanvasEditingMode.None;
+            int changed = 0;
+            suspend = true;
+            foreach (var s in strokes)
+            {
+                var rec = ShapeRecognizer.Recognize(s.StylusPoints.Select(p => (Point)p));
+                if (rec == null) continue;
+                var da = s.DrawingAttributes.Clone();
+                da.FitToCurve = false;
+                da.IgnorePressure = true;
+                Stroke ns = RichStroke.NeedsRich(da) ? new RichStroke(new StylusPointCollection(rec), da) : new Stroke(new StylusPointCollection(rec), da);
+                Ink.Strokes.Replace(s, new StrokeCollection(new[] { ns }));
+                changed++;
+            }
+            suspend = false;
+            ApplyTool();
+            if (changed > 0) { dirty = true; Commit(); }
+            return changed;
+        }
+
+        internal void SmoothSelection()
+        {
+            var strokes = SelectedOrAll().ToList();
+            Ink.EditingMode = InkCanvasEditingMode.None;
+            suspend = true;
+            foreach (var s in strokes) SetPoints(s, StrokeFx.Smooth(s.StylusPoints.Select(p => (Point)p).ToList(), Math.Max(2, SmoothLevel * 2)), null);
+            suspend = false;
+            ApplyTool();
+            if (strokes.Count > 0) { dirty = true; Commit(); }
+        }
+
+        // Cambia la forma de un trazo conservando la presión, salvo que se indique otra.
+        static void SetPoints(Stroke s, List<Point> pts, float[] pressure)
+        {
+            var old = s.StylusPoints;
+            var result = new StylusPointCollection();
+            for (int i = 0; i < pts.Count; i++)
+            {
+                float pf = pressure != null ? pressure[i] : (i < old.Count && pts.Count == old.Count ? old[i].PressureFactor : 0.5f);
+                result.Add(new StylusPoint(pts[i].X, pts[i].Y, pf));
+            }
+            s.StylusPoints = result;
         }
 
         void EraseTextAt(Point p)
@@ -1832,30 +2430,49 @@ namespace Pizarra
             if (Tool == Tool.Pen)
             {
                 if (Ruler != null) cur = SnapToRuler(cur);
-                if (RecognizeShapes && Pen != PenKind.Aerosol)
+                var raw = cur.StylusPoints.Select(p => (Point)p).ToList();
+                List<Point> shaped = null;
+                switch (Trace)
                 {
-                    var rec = ShapeRecognizer.Recognize(cur.StylusPoints.Select(p => (Point)p));
-                    if (rec != null)
-                    {
-                        var da = cur.DrawingAttributes.Clone();
-                        da.FitToCurve = false;
-                        da.IgnorePressure = true;
-                        Stroke ns = RichStroke.NeedsRich(da) ? new RichStroke(new StylusPointCollection(rec), da) : new Stroke(new StylusPointCollection(rec), da);
-                        Ink.Strokes.Replace(cur, new StrokeCollection(new[] { ns }));
-                        cur = ns;
-                    }
+                    case TraceMode.Geometria:
+                        if (Pen != PenKind.Aerosol) shaped = ShapeRecognizer.Recognize(raw);
+                        break;
+                    case TraceMode.Recto:
+                        if (raw.Count >= 2) shaped = ShapeRecognizer.Recognize(new[] { raw[0], raw[0] + (raw[raw.Count - 1] - raw[0]) * 0.33, raw[0] + (raw[raw.Count - 1] - raw[0]) * 0.66, raw[raw.Count - 1] });
+                        if (shaped == null && raw.Count >= 2) shaped = new List<Point> { raw[0], raw[raw.Count - 1] };
+                        break;
+                    case TraceMode.Ortogonal:
+                        if (raw.Count >= 2) shaped = StrokeFx.Orthogonal(raw);
+                        break;
                 }
-                if (Pen == PenKind.Pincel && cur.StylusPoints.All(p => Math.Abs(p.PressureFactor - 0.5f) < 0.001f))
+                if (shaped != null)
                 {
-                    // Con ratón no hay presión: se afinan los extremos para imitar un pincel.
-                    var pts = new StylusPointCollection();
-                    int n = cur.StylusPoints.Count;
-                    for (int i = 0; i < n; i++)
+                    var da = cur.DrawingAttributes.Clone();
+                    da.FitToCurve = false;
+                    da.IgnorePressure = true;
+                    Stroke ns = RichStroke.NeedsRich(da) ? new RichStroke(new StylusPointCollection(shaped), da) : new Stroke(new StylusPointCollection(shaped), da);
+                    Ink.Strokes.Replace(cur, new StrokeCollection(new[] { ns }));
+                    cur = ns;
+                }
+                else if (Trace != TraceMode.Letras)
+                {
+                    // La plumilla y el modo suavizado eliminan el temblor del pulso.
+                    int passes = Trace == TraceMode.Suavizado ? SmoothLevel * 3 : IsCalligraphic(Pen) ? SmoothLevel : 0;
+                    if (passes > 0 && raw.Count > 2)
                     {
-                        double t = n > 1 ? (double)i / (n - 1) : 0.5;
-                        pts.Add(new StylusPoint(cur.StylusPoints[i].X, cur.StylusPoints[i].Y, (float)(0.12 + 0.6 * Math.Sin(Math.PI * t))));
+                        raw = StrokeFx.Smooth(raw, passes);
+                        SetPoints(cur, raw, null);
                     }
-                    cur.StylusPoints = pts;
+                    bool mouse = cur.StylusPoints.All(p => Math.Abs(p.PressureFactor - 0.5f) < 0.001f);
+                    bool dynamic = Pen == PenKind.Inglesa || Pen == PenKind.Estilografica || Pen == PenKind.Firma || Pen == PenKind.Cepillo || Pen == PenKind.Pincel;
+                    if (dynamic && mouse) SetPoints(cur, raw, StrokeFx.Pressure(Pen, raw));
+                }
+                if (Trace == TraceMode.Letras)
+                {
+                    // Espera una pausa al escribir antes de reconocer la palabra.
+                    pendingLetters.Add(cur);
+                    letterTimer.Stop();
+                    letterTimer.Start();
                 }
             }
             suspend = false;
@@ -2002,8 +2619,17 @@ namespace Pizarra
         void OnInkDown(object sender, MouseButtonEventArgs e)
         {
             var p = e.GetPosition(Ink);
+            letterTimer.Stop();
+            if (CorrectionOpen) AcceptCorrection(); // seguir escribiendo da por buena la palabra anterior
             switch (Tool)
             {
+                case Tool.Pen:
+                    if (IsClickTrace)
+                    {
+                        e.Handled = true;
+                        PolyClick(p, (Keyboard.Modifiers & ModifierKeys.Shift) != 0, e.ClickCount);
+                    }
+                    break;
                 case Tool.Text:
                 case Tool.Sticky:
                     if (Inside<RichTextBox>(e.OriginalSource)) return; // clic dentro: editar
@@ -2043,6 +2669,7 @@ namespace Pizarra
 
         void OnInkMiddleDown(object sender, MouseButtonEventArgs e)
         {
+            if (e.ChangedButton == MouseButton.Right && PolyActive) { PolyFinish(); e.Handled = true; }
             if (e.ChangedButton == MouseButton.Middle && !ScreenMode) { StartPan(e); e.Handled = true; }
         }
 
@@ -2062,6 +2689,7 @@ namespace Pizarra
                 ClampPan();
                 ApplyView();
             }
+            else if (PolyActive) PolyMove(p, (Keyboard.Modifiers & ModifierKeys.Shift) != 0);
             else if (shaping) UpdateShape(p, (Keyboard.Modifiers & ModifierKeys.Shift) != 0);
             else if ((Tool == Tool.Eraser || Tool == Tool.StrokeEraser) && e.LeftButton == MouseButtonState.Pressed) EraseTextAt(p);
             else if (Tool == Tool.Spotlight || Tool == Tool.Magnifier) UpdateEffects(e.GetPosition(root));
@@ -2088,12 +2716,13 @@ namespace Pizarra
         internal void BeginShape(Point p)
         {
             shaping = true;
-            shapeStart = p;
+            shapeStart = SnapPoint(p);
             shapeStroke = null;
         }
 
         internal void UpdateShape(Point p, bool proportional)
         {
+            p = SnapPoint(p);
             if (proportional)
             {
                 double d = Math.Max(Math.Abs(p.X - shapeStart.X), Math.Abs(p.Y - shapeStart.Y));
@@ -2145,9 +2774,14 @@ namespace Pizarra
         {
             bool ctrl = (Keyboard.Modifiers & ModifierKeys.Control) != 0;
             bool shift = (Keyboard.Modifiers & ModifierKeys.Shift) != 0;
-            bool typing = Keyboard.FocusedElement is RichTextBox;
+            bool typing = Keyboard.FocusedElement is TextBoxBase;
             bool handled = true;
-            if (ctrl && e.Key == Key.S) Save(shift);
+            if (CorrectionOpen && e.Key == Key.Enter) AcceptCorrection();
+            else if (CorrectionOpen && e.Key == Key.Escape) CloseCorrection();
+            else if (PolyActive && (e.Key == Key.Enter || e.Key == Key.Return)) PolyFinish();
+            else if (PolyActive && e.Key == Key.Escape) PolyCancel();
+            else if (PolyActive && e.Key == Key.Back) PolyBack(Mouse.GetPosition(Ink));
+            else if (ctrl && e.Key == Key.S) Save(shift);
             else if (ctrl && e.Key == Key.O) Open();
             else if (ctrl && e.Key == Key.N) AddSheet();
             else if (ctrl && !typing && e.Key == Key.Z) Undo();
@@ -2553,6 +3187,11 @@ namespace Pizarra
                 "P lápiz · H resaltador · E borrador · T texto · W modo escritura · N nota · V seleccionar\n" +
                 "M mano · K láser · L línea · A flecha · R rectángulo · O elipse\n" +
                 "1-9 y 0 colores · [ y ] grosor\n\n" +
+                "Trazo punto a punto (polilínea, ortogonal, curva)\n" +
+                "Clic añade punto · doble clic, botón derecho o Enter termina · Retroceso quita el último\n" +
+                "Esc cancela · clic junto al inicio cierra · Mayús ajusta a 45 grados\n\n" +
+                "Letras a texto\n" +
+                "Escribe a mano y haz una pausa · Enter acepta · Esc deja el trazo · seguir escribiendo acepta\n\n" +
                 "Texto (al escribir)\n" +
                 "Ctrl+B negrita · Ctrl+I cursiva · Ctrl+U subrayado · Esc terminar\n\n" +
                 "Hojas\n" +
@@ -2573,6 +3212,7 @@ namespace Pizarra
         readonly CanvasWindow c;
         readonly Dictionary<Tool, Button> toolButtons = new Dictionary<Tool, Button>();
         readonly Dictionary<Color, Button> swatches = new Dictionary<Color, Button>();
+        readonly Button traceBtn, convertBtn;
         readonly Button screenBtn, sheetsBtn, writeBtn, undoBtn, redoBtn, monitorBtn, miniPen, miniCursor, shapeBtn, guideBtn, presentBtn, colorBtn, fontBtn, penChevron;
         readonly Slider slider;
         readonly TextBlock sizeLabel;
@@ -2599,7 +3239,9 @@ namespace Pizarra
 
         static readonly string[] Fonts = { "Segoe UI", "Arial", "Calibri", "Cambria", "Georgia", "Times New Roman", "Verdana", "Tahoma", "Consolas", "Courier New", "Comic Sans MS", "Segoe Print", "Segoe Script", "Ink Free", "Impact" };
 
-        static readonly string[] PenNames = { "Bolígrafo", "Lápiz", "Rotulador", "Pincel", "Caligrafía", "Neón", "Discontinuo", "Punteado", "Aerosol", "Arcoíris", "Tinta que se desvanece" };
+        static readonly string[] PenNames = { "Bolígrafo", "Lápiz", "Rotulador", "Pincel", "Neón", "Discontinuo", "Punteado", "Aerosol", "Arcoíris", "Tinta que se desvanece", "Caligrafía itálica", "Gótica", "Letra inglesa", "Estilográfica", "Firma", "Cepillo" };
+
+        static readonly string[] TraceNames = { "Dibujo libre", "Suavizado: elimina el temblor", "Línea recta", "Ortogonal a mano", "Geometría: dibujo a forma exacta", "Letras: escritura a texto", "Polilínea, clic a clic", "Polilínea ortogonal", "Curva por puntos" };
 
         static Color Hex(string s)
         {
@@ -2639,6 +3281,8 @@ namespace Pizarra
             AddTool(row1, Tool.Pen, Ui.Glyph("", "Lápiz (P)", delegate { c.SetTool(Tool.Pen); }));
             penChevron = Ui.Chevron("Tipos de lápiz", ShowPenMenu);
             row1.Children.Add(penChevron);
+            traceBtn = Ui.Drawn("M2,15 L6,5 L11,12 L16,3", "Modo de trazo: libre, geometría, letras, polilínea, ortogonal, curva", ShowTraceMenu);
+            row1.Children.Add(traceBtn);
             AddTool(row1, Tool.Highlighter, Ui.Glyph("", "Resaltador (H)", delegate { c.SetTool(Tool.Highlighter); }));
             AddTool(row1, Tool.Eraser, Ui.Glyph("", "Borrador (E)", delegate { c.SetTool(Tool.Eraser); }));
             AddTool(row1, Tool.StrokeEraser, Ui.Drawn("M3,15 L15,3 M3,3 L15,15", "Borrar trazo completo", delegate { c.SetTool(Tool.StrokeEraser); }));
@@ -2647,6 +3291,8 @@ namespace Pizarra
             row1.Children.Add(Ui.Chevron("Color de la nota", ShowStickyMenu));
             row1.Children.Add(Ui.Glyph("", "Insertar imagen (también Ctrl+V)", delegate { c.PickImage(); }));
             AddTool(row1, Tool.Select, Ui.Glyph("", "Seleccionar, mover y redimensionar (V). Supr elimina", delegate { c.SetTool(Tool.Select); }));
+            convertBtn = Ui.Chevron("Convertir la selección (o toda la hoja): a texto, a formas o suavizar", ShowConvertMenu);
+            row1.Children.Add(convertBtn);
             AddTool(row1, Tool.Hand, Ui.Glyph("", "Mano: mover la vista de la hoja (M)", delegate { c.SetTool(Tool.Hand); }));
             shapeBtn = Ui.Drawn(Shapes.Icon(ShapeKind.Rect), "Dibujar forma", delegate { c.SetTool(Tool.Shape); });
             AddTool(row1, Tool.Shape, shapeBtn);
@@ -2788,14 +3434,55 @@ namespace Pizarra
         {
             OpenList(penChevron, (panel, close) =>
             {
-                panel.Children.Add(Ui.Caption("Tipo de lápiz"));
+                var cols = Ui.Row();
+                var left = new StackPanel { MinWidth = 180 };
+                var right = new StackPanel { MinWidth = 190 };
+                left.Children.Add(Ui.Caption("Lápices"));
+                right.Children.Add(Ui.Caption("Estilos de escritura"));
                 foreach (PenKind k in Enum.GetValues(typeof(PenKind)))
                 {
                     var kk = k;
-                    panel.Children.Add(Ui.MenuItem(PenNames[(int)k], c.Pen == k, delegate { close(); c.SetPen(kk); }));
+                    (k >= PenKind.Caligrafia ? right : left).Children.Add(Ui.MenuItem(PenNames[(int)k], c.Pen == k, delegate { close(); c.SetPen(kk); }));
                 }
-                panel.Children.Add(new Border { Height = 1, Margin = new Thickness(4), Background = Brushes.Gray });
-                panel.Children.Add(Ui.MenuItem("Convertir dibujos en formas", c.RecognizeShapes, delegate { close(); c.RecognizeShapes = !c.RecognizeShapes; c.SetTool(Tool.Pen); }));
+                right.Children.Add(Ui.Caption("Ángulo de la plumilla"));
+                var nib = new Slider { Minimum = 0, Maximum = 90, Value = c.NibAngle, Focusable = false, Margin = new Thickness(6, 0, 6, 6) };
+                nib.ValueChanged += delegate { c.NibAngle = nib.Value; c.ApplyTool(); };
+                right.Children.Add(nib);
+                cols.Children.Add(left);
+                cols.Children.Add(right);
+                panel.Children.Add(cols);
+            });
+        }
+
+        void ShowTraceMenu()
+        {
+            OpenList(traceBtn, (panel, close) =>
+            {
+                panel.Children.Add(Ui.Caption("A mano alzada"));
+                foreach (TraceMode m in Enum.GetValues(typeof(TraceMode)))
+                {
+                    if (m == TraceMode.Polilinea) panel.Children.Add(Ui.Caption("Punto a punto"));
+                    var mm = m;
+                    panel.Children.Add(Ui.MenuItem(TraceNames[(int)m], c.Trace == m, delegate { close(); c.SetTrace(mm); }));
+                }
+                panel.Children.Add(Ui.Caption("Opciones"));
+                panel.Children.Add(Ui.MenuItem("Revisar las letras antes de convertir", c.ReviewLetters, delegate { close(); c.ReviewLetters = !c.ReviewLetters; }));
+                panel.Children.Add(Ui.MenuItem("Ajustar a la rejilla", c.SnapGrid, delegate { close(); c.SnapGrid = !c.SnapGrid; }));
+                panel.Children.Add(Ui.Caption("Nivel de suavizado"));
+                var smooth = new Slider { Minimum = 0, Maximum = 10, Value = c.SmoothLevel, IsSnapToTickEnabled = true, TickFrequency = 1, Focusable = false, Margin = new Thickness(6, 0, 6, 6) };
+                smooth.ValueChanged += delegate { c.SmoothLevel = (int)smooth.Value; };
+                panel.Children.Add(smooth);
+            });
+        }
+
+        void ShowConvertMenu()
+        {
+            OpenList(convertBtn, (panel, close) =>
+            {
+                panel.Children.Add(Ui.Caption("Selección, o toda la hoja si no hay"));
+                panel.Children.Add(Ui.MenuItem("Convertir escritura a texto", false, delegate { close(); c.ConvertSelectionToText(); }));
+                panel.Children.Add(Ui.MenuItem("Convertir dibujos en formas", false, delegate { close(); c.ConvertSelectionToShapes(); }));
+                panel.Children.Add(Ui.MenuItem("Suavizar trazos", false, delegate { close(); c.SmoothSelection(); }));
             });
         }
 
@@ -2968,6 +3655,8 @@ namespace Pizarra
             shapeBtn.Content = Ui.IconPath(Shapes.Icon(c.ShapeType));
             shapeBtn.ToolTip = Shapes.Name(c.ShapeType);
             toolButtons[Tool.Pen].ToolTip = PenNames[(int)c.Pen] + " (P)";
+            traceBtn.Tag = c.Trace != TraceMode.Libre ? "on" : null;
+            traceBtn.ToolTip = "Modo de trazo: " + TraceNames[(int)c.Trace];
             guideBtn.Tag = c.Ruler != null || c.Protractor != null ? "on" : null;
             presentBtn.Tag = c.Tool == Tool.Laser || c.Tool == Tool.Spotlight || c.Tool == Tool.Magnifier ? "on" : null;
             colorDot.Fill = new SolidColorBrush(c.InkColor);

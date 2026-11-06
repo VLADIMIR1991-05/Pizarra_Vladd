@@ -30,6 +30,8 @@ $args = @(
   '/nologo', '/target:winexe', '/optimize+', '/platform:x64', "/out:$Out", "/win32icon:$ico",
   "/r:$wpf\PresentationCore.dll", "/r:$wpf\PresentationFramework.dll", "/r:$wpf\WindowsBase.dll",
   "/r:$fw\System.Xaml.dll", '/r:System.Windows.Forms.dll', '/r:System.Drawing.dll', '/r:System.Core.dll',
+  "/r:$fw\System.Runtime.dll", "/r:$fw\System.Threading.Tasks.dll", "/r:$fw\System.Runtime.WindowsRuntime.dll",
+  "/r:$env:WINDIR\System32\WinMetadata\Windows.Foundation.winmd", "/r:$env:WINDIR\System32\WinMetadata\Windows.UI.winmd",
   '/codepage:65001'
 )
 foreach ($d in $Define) { $args += "/define:$d" }

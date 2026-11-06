@@ -13,12 +13,15 @@ Es un solo `.exe` sin instalación; usa .NET Framework 4.8, ya incluido en Windo
 
 | Área | Incluye |
 |---|---|
-| Lápices | Bolígrafo, lápiz, rotulador, pincel, caligrafía, neón, discontinuo, punteado, aerosol, arcoíris y tinta que se desvanece |
-| Otras herramientas de dibujo | Resaltador, borrador parcial y de trazo completo, selección para mover y redimensionar, convertir dibujos en formas |
+| Lápices | Bolígrafo, lápiz, rotulador, pincel, neón, discontinuo, punteado, aerosol, arcoíris y tinta que se desvanece |
+| Estilos de escritura | Caligrafía itálica y gótica con ángulo de plumilla ajustable, letra inglesa, estilográfica, firma y cepillo; pauta de caligrafía como fondo |
+| Modos de trazo | Dibujo libre, suavizado con nivel ajustable, línea recta, ortogonal a mano, geometría, letras a texto, polilínea, polilínea ortogonal y curva por puntos; ajuste a la rejilla |
+| Reconocimiento | Letras a mano a texto con el reconocedor de Windows, con panel de corrección y alternativas; ortografía al editar; dibujos a línea, flecha, elipse, triángulo, rectángulo, rombo, pentágono, hexágono o estrella |
+| Otras herramientas de dibujo | Resaltador, borrador parcial y de trazo completo, selección para mover y redimensionar; convertir o suavizar lo ya dibujado |
 | Color | 10 colores rápidos, 48 colores ampliados, selector personalizado, cuentagotas y opacidad |
 | Formas | Línea, flecha, flecha doble, rectángulo, rectángulo redondeado, elipse, triángulos, rombo, pentágono, hexágono, estrella y ejes; con relleno opcional |
 | Texto | Cuadros de texto, notas adhesivas, 15 tipos de letra, tamaño, color, negrita, cursiva, subrayado, tachado, resaltado, alineación, listas y sangría |
-| Hojas | 9 fondos (blanca, cuadriculada, rayada, puntos, negra, verde, milimetrada, pentagrama, isométrica), duplicar, reordenar y plantillas (Kanban, DAFO, Cornell, plan semanal) |
+| Hojas | 10 fondos (blanca, cuadriculada, rayada, puntos, negra, verde, milimetrada, pentagrama, isométrica, pauta), duplicar, reordenar y plantillas (Kanban, DAFO, Cornell, plan semanal) |
 | Imágenes | Insertar archivos, pegar con `Ctrl+V` y capturar la pantalla en una hoja nueva |
 | Geometría | Regla con ajuste del lápiz a su borde y transportador |
 | Presentar | Puntero láser, foco y lupa |
@@ -45,4 +48,6 @@ Las pruebas llaman directamente al código: no sustituyen a probar con un ratón
 
 ## No incluido
 
-Colaboración en tiempo real, nube, importar PDF, grabar vídeo y reconocer escritura a mano.
+Colaboración en tiempo real, nube, importar PDF y grabar vídeo.
+
+La conversión de letras a texto necesita el paquete de escritura a mano de Windows para el idioma; si falta, la aplicación indica dónde instalarlo.
